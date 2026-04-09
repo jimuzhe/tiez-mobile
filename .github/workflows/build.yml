@@ -30,8 +30,8 @@ jobs:
         run: npm install
 
       - name: 🚀 Build Android (APK)
-        run: npx eas build --platform android --profile preview --non-interactive
+        run: eas build --platform android --profile preview --non-interactive
 
       - name: 🚀 Build iOS (Simulator/IPA)
         # 注意：IPA 构建需要配置开发者账号证书。这里默认使用 preview 配置。
-        run: npx eas build --platform ios --profile preview --non-interactive
+        run: eas build --platform ios --profile preview --non-interactive
