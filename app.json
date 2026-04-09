@@ -22,19 +22,25 @@
             "UIApplicationShortcutItemType": "scanner",
             "UIApplicationShortcutItemTitle": "文件传输",
             "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCaptureVideo",
-            "UIApplicationShortcutItemUserInfo": { "url": "tiez://scanner" }
+            "UIApplicationShortcutItemUserInfo": {
+              "url": "tiez://scanner"
+            }
           },
           {
             "UIApplicationShortcutItemType": "pull",
             "UIApplicationShortcutItemTitle": "获取 PC 内容",
             "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCloudDownload",
-            "UIApplicationShortcutItemUserInfo": { "url": "tiez://sync-pull" }
+            "UIApplicationShortcutItemUserInfo": {
+              "url": "tiez://sync-pull"
+            }
           },
           {
             "UIApplicationShortcutItemType": "push",
             "UIApplicationShortcutItemTitle": "同步到 PC",
             "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeShare",
-            "UIApplicationShortcutItemUserInfo": { "url": "tiez://sync-push" }
+            "UIApplicationShortcutItemUserInfo": {
+              "url": "tiez://sync-push"
+            }
           }
         ]
       }
@@ -78,6 +84,11 @@
             "data": "tiez://sync-push"
           }
         }
+      ],
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
     },
     "web": {
@@ -95,6 +106,12 @@
       "expo-video",
       "expo-audio",
       "./plugins/withAndroidTile"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "4fb696a2-b323-4752-b8bc-f6d165989cbd"
+      }
+    },
+    "owner": "longdanzi"
   }
 }
