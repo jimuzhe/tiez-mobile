@@ -107,9 +107,8 @@ export default function ScannerScreen() {
 
   // 视频预览状态
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
-  const [isCaptureVisible, setCaptureVisible] = useState(false);
-  const [captureMode, setCaptureMode] = useState<'picture' | 'video'>('picture');
   const [isRecording, setIsRecording] = useState(false);
+  const [isCaptureVisible, setCaptureVisible] = useState(false);
   const [recordSecondsLeft, setRecordSecondsLeft] = useState(MAX_VIDEO_DURATION_SECONDS);
   const [captureFacing, setCaptureFacing] = useState<'front' | 'back'>('back');
   const [captureZoom, setCaptureZoom] = useState(0);
@@ -122,6 +121,7 @@ export default function ScannerScreen() {
     y: width / 2,
     visible: false,
   });
+  const [isCameraReady, setIsCameraReady] = useState(false);
 
   const ws = useRef<WebSocket | null>(null);
   const flatListRef = useRef<FlatList>(null);
@@ -340,7 +340,6 @@ export default function ScannerScreen() {
     isRecordingRef.current = false;
     setIsRecording(false);
     setPendingRecordStart(false);
-    setCaptureMode('picture');
     setRecordSecondsLeft(MAX_VIDEO_DURATION_SECONDS);
     if (recordingIntervalRef.current) {
       clearInterval(recordingIntervalRef.current);
@@ -364,9 +363,6 @@ export default function ScannerScreen() {
       return;
     }
 
-    setCaptureMode('picture');
-    setRecordSecondsLeft(MAX_VIDEO_DURATION_SECONDS);
-    setCaptureFacing('back');
     setCaptureFlash('off');
     setCaptureZoom(0);
     setCaptureAutofocus('off');
@@ -499,16 +495,17 @@ export default function ScannerScreen() {
       }
     } catch (e) {
       resetRecordingState();
-      Alert.alert('录像失败', '请稍后重试');
+      const message = e instanceof Error ? e.message : '请稍后重试';
+      Alert.alert('录像失败', message);
     }
   };
 
   useEffect(() => {
-    if (!pendingRecordStart || captureMode !== 'video' || !isCaptureVisible || captureDraft) return;
+    if (!pendingRecordStart || !isCaptureVisible || captureDraft) return;
 
     recordingStartTimeoutRef.current = setTimeout(() => {
       beginRecordingSession();
-    }, 180);
+    }, 200);
 
     return () => {
       if (recordingStartTimeoutRef.current) {
@@ -516,7 +513,7 @@ export default function ScannerScreen() {
         recordingStartTimeoutRef.current = null;
       }
     };
-  }, [pendingRecordStart, captureMode, isCaptureVisible, captureDraft]);
+  }, [pendingRecordStart, isCaptureVisible, captureDraft]);
 
   const handleStartRecording = async () => {
     if (!savedDeviceIp || isRecordingRef.current || pendingRecordStart || !captureCameraRef.current) return;
@@ -529,7 +526,6 @@ export default function ScannerScreen() {
       return;
     }
 
-    setCaptureMode('video');
     setRecordSecondsLeft(MAX_VIDEO_DURATION_SECONDS);
     setPendingRecordStart(true);
   };
@@ -537,7 +533,6 @@ export default function ScannerScreen() {
   const handleCapturePressOut = (_event?: GestureResponderEvent) => {
     if (pendingRecordStart && !isRecordingRef.current) {
       setPendingRecordStart(false);
-      setCaptureMode('picture');
       didLongPressCaptureRef.current = false;
       return;
     }
@@ -548,7 +543,6 @@ export default function ScannerScreen() {
 
   const cancelCaptureDraft = () => {
     setCaptureDraft(null);
-    setCaptureMode('picture');
     setCaptureZoom(0);
   };
 
@@ -682,9 +676,9 @@ export default function ScannerScreen() {
 
   const renderMessageItem = ({ item }: { item: Message }) => {
     const isMe = item.direction === 'in'; 
-    const isPCImage = item.msg_type === 'image' && item.content.startsWith('/download');
+    const isRemoteMedia = (item.msg_type === 'image' || item.msg_type === 'video') && item.content.startsWith('/download');
     const baseIp = savedDeviceIp?.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
-    const imageUrl = isPCImage ? `${baseIp}${item.content}` : (isMe && item.msg_type === 'image' ? item.content : null);
+    const mediaUrl = isRemoteMedia ? `${baseIp}${item.content}` : (isMe && (item.msg_type === 'image' || item.msg_type === 'video') ? item.content : null);
     const showUploadBadge = item.isOptimistic && isUploading;
     const uploadPercent = Math.max(1, Math.min(99, Math.round(uploadProgress * 100)));
 
@@ -693,17 +687,23 @@ export default function ScannerScreen() {
         <Pressable 
           onLongPress={(e) => showMenu(e, item)}
           onPress={() => {
-            if (!item.isOptimistic && item.msg_type === 'image' && imageUrl) {
-              setPreviewImages([buildCachedImageSource(imageUrl)]);
+            if (!item.isOptimistic && item.msg_type === 'image' && mediaUrl) {
+              setPreviewImages([buildCachedImageSource(mediaUrl)]);
               setPreviewVisible(true);
             }
           }}
           style={({pressed}) => [
             styles.bubble, 
             isMe ? styles.myBubble : styles.otherBubble,
-            (item.msg_type === 'image' && imageUrl) && { padding: 0, borderRadius: 12, backgroundColor: 'transparent' },
-            pressed && { opacity: 0.8 },
-            item.isOptimistic && { opacity: 0.88 }
+            ((item.msg_type === 'image' || item.msg_type === 'video') && mediaUrl) && { 
+              padding: 0, 
+              borderRadius: 16, 
+              backgroundColor: 'transparent',
+              borderWidth: 0,
+              shadowOpacity: 0
+            },
+            pressed && { opacity: 0.85, transform: [{ scale: 0.985 }] },
+            item.isOptimistic && { opacity: 0.6 }
           ]}
         >
           {item.msg_type === 'text' && (
@@ -714,9 +714,9 @@ export default function ScannerScreen() {
             </Text>
           )}
 
-          {item.msg_type === 'image' && imageUrl && (
+          {item.msg_type === 'image' && mediaUrl && (
             <View>
-              <AutoHeightImage uri={imageUrl} maxWidth={width * 0.6} />
+              <AutoHeightImage uri={mediaUrl} maxWidth={width * 0.6} />
               {showUploadBadge && (
                 <View style={styles.uploadBadge}>
                   <Text style={styles.uploadBadgeText}>{uploadPercent}</Text>
@@ -725,14 +725,14 @@ export default function ScannerScreen() {
             </View>
           )}
 
-          {item.msg_type === 'video' && imageUrl && (
+          {item.msg_type === 'video' && mediaUrl && (
             <Pressable 
               onPress={() => {
-                if (!item.isOptimistic) setPreviewVideoUrl(imageUrl);
+                if (!item.isOptimistic) setPreviewVideoUrl(mediaUrl);
               }}
               style={styles.videoContainer}
             >
-              <VideoThumbnailView uri={imageUrl} styles={styles} />
+              <VideoThumbnailView uri={mediaUrl} styles={styles} />
               <View style={styles.videoPlayOverlay}>
                 <Feather name="play" size={24} color="#FFF" />
               </View>
@@ -744,7 +744,7 @@ export default function ScannerScreen() {
             </Pressable>
           )}
 
-          {(item.msg_type === 'file' || (item.msg_type === 'image' && !imageUrl) || (item.msg_type === 'video' && !imageUrl)) && (
+          {(item.msg_type === 'file' || (item.msg_type === 'image' && !mediaUrl) || (item.msg_type === 'video' && !mediaUrl)) && (
             <View style={styles.fileContainer}>
               <View>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -861,12 +861,15 @@ export default function ScannerScreen() {
                   ref={captureCameraRef}
                   style={StyleSheet.absoluteFill}
                   facing={captureFacing}
-                  mode={captureMode}
+                  mode="video"
                   zoom={captureZoom}
                   mirror={captureFacing === 'front'}
                   flash={captureFlash}
-                  enableTorch={captureFlash === 'on' && captureMode === 'video'}
+                  enableTorch={captureFlash === 'on'}
                   autofocus={captureAutofocus}
+                  onCameraReady={() => {
+                    setIsCameraReady(true);
+                  }}
                 />
                 <Pressable style={StyleSheet.absoluteFill} onPress={handleFocusTap}>
                   {focusIndicator.visible && (
@@ -1351,11 +1354,30 @@ const getStyles = (colors: any, isDark: boolean) => StyleSheet.create({
   messageRow: { marginBottom: 16, flexDirection: 'row', width: '100%' },
   myRow: { justifyContent: 'flex-end' },
   otherRow: { justifyContent: 'flex-start' },
-  bubble: { maxWidth: width * 0.75, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, overflow: 'hidden' },
-  myBubble: { backgroundColor: colors.primary },
-  otherBubble: { backgroundColor: colors.card },
-  myText: { color: colors.primaryText, fontSize: 16, lineHeight: 22 },
-  otherText: { color: colors.text, fontSize: 16, lineHeight: 22 },
+  bubble: { 
+    maxWidth: width * 0.75, 
+    borderRadius: 20, 
+    paddingHorizontal: 16, 
+    paddingVertical: 12, 
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  myBubble: { 
+    backgroundColor: colors.primary,
+    borderBottomRightRadius: 4,
+  },
+  otherBubble: { 
+    backgroundColor: colors.card,
+    borderBottomLeftRadius: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.divider,
+  },
+  myText: { color: colors.primaryText, fontSize: 16, lineHeight: 24, fontWeight: '400' },
+  otherText: { color: colors.text, fontSize: 16, lineHeight: 24, fontWeight: '400' },
   fileContainer: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   fileName: { marginLeft: 8, fontSize: 14, flexShrink: 1 },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 12, paddingBottom: Platform.OS === 'ios' ? 12 : 12, backgroundColor: colors.background, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider },

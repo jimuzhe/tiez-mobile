@@ -3,6 +3,7 @@
     "name": "tiez-mobile",
     "slug": "tiez-mobile",
     "version": "1.0.0",
+    "scheme": "tiez",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -13,15 +14,71 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jimuzhe.tiez",
+      "infoPlist": {
+        "UIApplicationShortcutItems": [
+          {
+            "UIApplicationShortcutItemType": "scanner",
+            "UIApplicationShortcutItemTitle": "文件传输",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCaptureVideo",
+            "UIApplicationShortcutItemUserInfo": { "url": "tiez://scanner" }
+          },
+          {
+            "UIApplicationShortcutItemType": "pull",
+            "UIApplicationShortcutItemTitle": "获取 PC 内容",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCloudDownload",
+            "UIApplicationShortcutItemUserInfo": { "url": "tiez://sync-pull" }
+          },
+          {
+            "UIApplicationShortcutItemType": "push",
+            "UIApplicationShortcutItemTitle": "同步到 PC",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeShare",
+            "UIApplicationShortcutItemUserInfo": { "url": "tiez://sync-push" }
+          }
+        ]
+      }
     },
     "android": {
+      "package": "com.jimuzhe.tiez",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "shortcuts": [
+        {
+          "id": "scanner",
+          "shortLabel": "文件传输",
+          "longLabel": "开启文件快传",
+          "icon": "./assets/icon.png",
+          "intent": {
+            "action": "android.intent.action.VIEW",
+            "data": "tiez://scanner"
+          }
+        },
+        {
+          "id": "pull",
+          "shortLabel": "获取内容",
+          "longLabel": "获取 PC 端内容",
+          "icon": "./assets/icon.png",
+          "intent": {
+            "action": "android.intent.action.VIEW",
+            "data": "tiez://sync-pull"
+          }
+        },
+        {
+          "id": "push",
+          "shortLabel": "同步内容",
+          "longLabel": "同步剪贴板到 PC",
+          "icon": "./assets/icon.png",
+          "intent": {
+            "action": "android.intent.action.VIEW",
+            "data": "tiez://sync-push"
+          }
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -36,7 +93,8 @@
         }
       ],
       "expo-video",
-      "expo-audio"
+      "expo-audio",
+      "./plugins/withAndroidTile"
     ]
   }
 }

@@ -10,6 +10,8 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Dimensions,
+  Linking,
   View,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -182,38 +184,126 @@ export default function HomeScreen() {
       const nextSettings = await loadMobileSyncSettings();
       setSettings(nextSettings);
 
-      const [clipboardEntry, webDavEntries] = await Promise.all([
-        captureClipboardSnapshot(),
-        fetchWebDavEntries(nextSettings)
-          .then((entries) => buildWebDavDisplayRecord(entries, nextSettings.recentLimit))
-          .catch(() => EMPTY_PULL_RECORD),
-      ]);
+      const clipboardEntry = await captureClipboardSnapshot();
 
-      setPullRecord(webDavEntries);
-      setSelectedTag((current) => {
-        if (!current) return null;
-        return webDavEntries.tags.includes(current) ? current : null;
-      });
-
-      // 智能自动推送逻辑
+      // 智能自动推送逻辑（仅在设置开启且本次启动未推送时执行）
       if (clipboardEntry && nextSettings.autoPushOnLaunch && !hasAutoPushedRef.current) {
         hasAutoPushedRef.current = true;
         pushClipboardBatchToPc([clipboardEntry]).catch(() => {});
       }
+
+      // 如果当前已经是 pull 模式（比如从设置页返回），则需要顺带加载远程数据
+      if (mode === 'pull') {
+        const entries = await fetchWebDavEntries(nextSettings)
+          .then((entries) => buildWebDavDisplayRecord(entries, nextSettings.recentLimit))
+          .catch(() => EMPTY_PULL_RECORD);
+        setPullRecord(entries);
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : '加载同步页面失败';
-      Alert.alert('读取失败', message);
+      const message = error instanceof Error ? error.message : '加载本地数据失败';
+      Alert.alert('加载失败', message);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [captureClipboardSnapshot]);
+  }, [captureClipboardSnapshot, mode]);
+
+  // 当用户切换到拉取模式时，如果当前数据为空或需要更新，主动触发拉取
+  useEffect(() => {
+    if (mode === 'pull' && settings) {
+      const doFetchPull = async () => {
+        setIsLoading(true);
+        try {
+          const entries = await fetchWebDavEntries(settings)
+            .then((entries) => buildWebDavDisplayRecord(entries, settings.recentLimit))
+            .catch(() => EMPTY_PULL_RECORD);
+          setPullRecord(entries);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      
+      // 只有在没有记录或者用户主动切换时才触发
+      if (pullRecord.recentEntries.length === 0) {
+        doFetchPull();
+      }
+    }
+  }, [mode, settings]);
 
   useFocusEffect(
     useCallback(() => {
       loadHomeData();
     }, [loadHomeData])
   );
+
+  // 处理来自 Android 磁贴按钮及长按图标快捷菜单的指令
+  useEffect(() => {
+    const handleDeepLink = async (event: { url: string }) => {
+      const url = event.url;
+      
+      // 1. 文件传输
+      if (url.includes('scanner')) {
+        triggerHaptic();
+        navigation.navigate('Scanner' as any);
+        return;
+      }
+
+      // 2. 获取 PC 端内容
+      if (url.includes('sync-pull')) {
+        triggerHaptic();
+        setMode('pull');
+        setIsLoading(true);
+        try {
+          const nextSettings = await loadMobileSyncSettings();
+          const entries = await fetchWebDavEntries(nextSettings)
+            .then((entries) => buildWebDavDisplayRecord(entries, nextSettings.recentLimit));
+          
+          setPullRecord(entries);
+          
+          if (entries.recentEntries.length > 0) {
+            const first = entries.recentEntries[0];
+            if (first.msg_type === 'text') {
+              await Clipboard.setStringAsync(first.content);
+              Alert.alert('同步成功', `已自动复制最新内容：\n${first.content.substring(0, 50)}${first.content.length > 50 ? '...' : ''}`);
+            }
+          }
+        } catch (err: any) {
+          Alert.alert('获取失败', err.message);
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      // 3. 同步内容到 PC (包含了之前的 sync-now 指令)
+      if (url.includes('sync-push') || url.includes('sync-now')) {
+        setMode('push');
+        const clipboardEntry = await captureClipboardSnapshot();
+        if (clipboardEntry) {
+          triggerHaptic();
+          pushClipboardBatchToPc([clipboardEntry])
+            .then(() => {
+              loadHomeData();
+            })
+            .catch((err) => {
+              Alert.alert('快捷同步失败', err.message);
+            });
+        }
+      }
+    };
+
+    // 监听运行中的打开
+    const subscription = Linking.addEventListener('url', handleDeepLink);
+
+    // 检查是否是通过点击磁贴启动的应用
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink({ url });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [loadHomeData, captureClipboardSnapshot]);
 
   useEffect(() => {
     setSelectedPushIds((current) =>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   PanResponder,
   ScrollView,
@@ -33,6 +34,8 @@ import {
   type RecentLimit,
 } from '../lib/sync';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as WebBrowser from 'expo-web-browser';
+import Constants from 'expo-constants';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -52,6 +55,7 @@ export default function SettingsScreen() {
   const [isAboutVisible, setIsAboutVisible] = useState(false);
   const [shouldRenderAbout, setShouldRenderAbout] = useState(false);
   const [localCacheSizeLabel, setLocalCacheSizeLabel] = useState('0 B');
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const sheetEntryAnim = useRef(new Animated.Value(0)).current;
 
   const [trackWidth, setTrackWidth] = useState(0);
@@ -267,6 +271,49 @@ export default function SettingsScreen() {
         }
       ]
     );
+  };
+
+  const handleCheckUpdate = async () => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+    triggerHaptic();
+
+    try {
+      const localVersion = Constants.expoConfig?.version || '1.0.0';
+      
+      // 这里的 URL 你之后可以换成真实的 GitHub API 或你自己的 API 地址
+      const updateUrl = 'https://api.github.com/repos/jimuzhe/tiez-mobile/releases/latest';
+      
+      const response = await fetch(updateUrl).catch(() => null);
+      if (!response || !response.ok) {
+        throw new Error('无法连接到更新服务器');
+      }
+
+      const data = await response.json();
+      const latestVersion = data.tag_name?.replace('v', '') || '1.0.0';
+      const downloadUrl = data.html_url || 'https://github.com/jimuzhe/tiez-mobile/releases';
+
+      // 简单的版本比对逻辑
+      if (latestVersion !== localVersion) {
+        Alert.alert(
+          '发现新版本',
+          `最新版本: v${latestVersion}\n当前版本: v${localVersion}\n\n是否立即前往下载最新版？`,
+          [
+            { text: '稍后再说', style: 'cancel' },
+            { 
+              text: '立即更新', 
+              onPress: () => WebBrowser.openBrowserAsync(downloadUrl) 
+            }
+          ]
+        );
+      } else {
+        Alert.alert('已是最新', `当前版本 v${localVersion} 已是最新，无需更新。`);
+      }
+    } catch (error) {
+      Alert.alert('检查失败', '暂时无法获取更新信息，请检查网络连接。');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
   };
 
   const handleClearLocalCache = () => {
@@ -638,12 +685,21 @@ export default function SettingsScreen() {
             <Feather name="chevron-right" size={20} color={colors.subText} />
           </TouchableOpacity>
           <View style={dynamicStyles.divider} />
-          <TouchableOpacity style={styles.row} activeOpacity={0.7} onPress={() => triggerHaptic()}>
+          <TouchableOpacity 
+            style={styles.row} 
+            activeOpacity={0.7} 
+            onPress={handleCheckUpdate}
+            disabled={isCheckingUpdate}
+          >
             <View style={dynamicStyles.iconBox}>
               <Feather name="arrow-up-circle" size={18} color={colors.text} />
             </View>
             <Text style={dynamicStyles.rowText}>检查更新</Text>
-            <Feather name="chevron-right" size={20} color={colors.subText} />
+            {isCheckingUpdate ? (
+              <ActivityIndicator size="small" color={colors.subText} style={{ marginRight: 8 }} />
+            ) : (
+              <Feather name="chevron-right" size={20} color={colors.subText} />
+            )}
           </TouchableOpacity>
         </View>
 

@@ -164,7 +164,7 @@ const DEFAULT_SETTINGS: MobileSyncSettings = {
 const MAX_LOCAL_SYNC_ITEMS = 200;
 const MAX_REMOTE_SYNC_ITEMS = 400;
 const WEBDAV_HEAD_FILENAME = 'head.json';
-const WEBDAV_DEBUG_LOG = true;
+const WEBDAV_DEBUG_LOG = __DEV__;
 const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:">
   <d:prop>
