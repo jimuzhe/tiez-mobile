@@ -49,6 +49,11 @@ TieZ Mobile 是 [TieZ Clipboard Manager](https://github.com/jimuzhe/tiez-clipboa
 
 项目通过 GitHub Actions 配置了 CI/CD 流程。代码推送至主分支后，将自动触发云端构建任务。
 
+## 开源协议
+
+本项目遵循 [GNU General Public License v3.0 (GPL-3.0)](LICENSE) 开源协议。
+
 ---
 
 Designed by TieZ Team.
+
