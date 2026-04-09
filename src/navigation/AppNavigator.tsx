@@ -5,40 +5,48 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { BlurView } from 'expo-blur';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { StatusBar } from 'expo-status-bar';
 
 import HomeScreen from '../screens/HomeScreen';
 import ScannerScreen from '../screens/ScannerScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import { useTheme } from '../theme/ThemeContext';
 
 const Tab = createBottomTabNavigator();
 
-const MyTheme = {
-  ...DarkTheme,
-  colors: {
-    ...DarkTheme.colors,
-    background: '#000000',
-    card: '#000000',
-  },
-};
-
 export default function AppNavigator() {
+  const { colors, isDark } = useTheme();
+
+  const navigationTheme = {
+    ...(isDark ? DarkTheme : DefaultTheme),
+    colors: {
+      ...(isDark ? DarkTheme.colors : DefaultTheme.colors),
+      background: colors.background,
+      card: colors.background,
+      text: colors.text,
+      border: colors.border,
+      primary: colors.primary,
+    },
+  };
+
   return (
-    <NavigationContainer theme={MyTheme}>
+    <NavigationContainer theme={navigationTheme}>
+      <StatusBar style={isDark ? 'light' : 'dark'} translucent />
       <Tab.Navigator
         screenOptions={({ route }) => ({
           headerShown: false,
           tabBarShowLabel: true,
           tabBarHideOnKeyboard: true,
-          tabBarActiveTintColor: '#FFFFFF',
-          tabBarInactiveTintColor: '#666666',
+          tabBarActiveTintColor: colors.text,
+          tabBarInactiveTintColor: colors.subText,
           tabBarStyle: {
             position: 'absolute',
             bottom: 0,
             left: 0,
             right: 0,
             elevation: 0,
-            borderTopWidth: 1,
-            borderTopColor: '#1C1C1E',
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: colors.divider,
             backgroundColor: 'transparent',
             height: 85,
             paddingBottom: 25,
@@ -46,7 +54,7 @@ export default function AppNavigator() {
           },
           tabBarBackground: () => (
             <BlurView
-              tint="dark"
+              tint={isDark ? 'dark' : 'light'}
               intensity={95}
               style={StyleSheet.absoluteFill}
             />

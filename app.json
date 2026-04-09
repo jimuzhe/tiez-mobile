@@ -27,7 +27,16 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "允许 TieZ 使用相机进行扫码、拍照和录像。",
+          "microphonePermission": "允许 TieZ 使用麦克风录制视频声音。"
+        }
+      ],
+      "expo-video",
+      "expo-audio"
     ]
   }
 }
