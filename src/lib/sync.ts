@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type RecentLimit = 10 | 20;
+export type RecentLimit = number;
 export type PushStrategy = 'mqtt' | 'webdav';
 export type MqttProtocol = 'ws://' | 'wss://';
 
@@ -39,6 +39,12 @@ export type SyncedEntry = {
   pinned_order?: number;
 };
 
+export type WebDavDisplayRecord = {
+  tags: string[];
+  entriesByTag: Record<string, SyncedEntry[]>;
+  recentEntries: SyncedEntry[];
+};
+
 export type LocalClipboardEntry = {
   id: string;
   content: string;
@@ -51,6 +57,8 @@ type CloudSyncItem = {
   content_hash: number;
   deleted_at: number;
   html_content?: string | null;
+  content_blob_hash?: string | null;
+  html_blob_hash?: string | null;
   source_app: string;
   timestamp: number;
   preview: string;
@@ -126,6 +134,14 @@ export const STORAGE_KEYS = {
   webdavPulledItems: 'mobile.cloud_sync_webdav_pulled_items',
 } as const;
 
+const LOCAL_SYNC_CACHE_KEYS = [
+  STORAGE_KEYS.webdavLocalSeq,
+  STORAGE_KEYS.webdavOpCursorMap,
+  STORAGE_KEYS.webdavLocalIndex,
+  STORAGE_KEYS.webdavLocalItems,
+  STORAGE_KEYS.webdavPulledItems,
+] as const;
+
 const DEFAULT_SETTINGS: MobileSyncSettings = {
   webdavUrl: '',
   webdavUsername: '',
@@ -148,6 +164,7 @@ const DEFAULT_SETTINGS: MobileSyncSettings = {
 const MAX_LOCAL_SYNC_ITEMS = 200;
 const MAX_REMOTE_SYNC_ITEMS = 400;
 const WEBDAV_HEAD_FILENAME = 'head.json';
+const WEBDAV_DEBUG_LOG = true;
 const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:">
   <d:prop>
@@ -158,6 +175,41 @@ const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 
 function nowMs() {
   return Date.now();
+}
+
+function estimateStorageBytes(value: string | null) {
+  if (!value) return 0;
+  return value.length * 2;
+}
+
+export function formatCacheSize(bytes: number) {
+  if (bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export async function getLocalSyncCacheSize() {
+  const pairs = await AsyncStorage.multiGet([...LOCAL_SYNC_CACHE_KEYS]);
+  return pairs.reduce((total, [, value]) => total + estimateStorageBytes(value), 0);
+}
+
+export async function clearLocalSyncCache() {
+  await AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS]);
+}
+
+function truncateLogText(value: string, limit = 240) {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}...`;
+}
+
+function logWebDavDebug(message: string, extra?: Record<string, unknown>) {
+  if (!WEBDAV_DEBUG_LOG) return;
+  if (extra) {
+    console.log(`[WebDAV] ${message}`, extra);
+  } else {
+    console.log(`[WebDAV] ${message}`);
+  }
 }
 
 function encodeBase64(input: string) {
@@ -260,8 +312,10 @@ function syncKeyForItem(item: CloudSyncItem) {
 function syncDigestForItem(item: CloudSyncItem) {
   const digestSeed = JSON.stringify({
     contentHash: resolvedContentHash(item),
+    contentBlobHash: item.content_blob_hash ?? '',
     deletedAt: item.deleted_at,
     htmlContent: item.html_content ?? '',
+    htmlBlobHash: item.html_blob_hash ?? '',
     isPinned: item.is_pinned,
     pinnedOrder: item.pinned_order,
     preview: item.preview,
@@ -280,6 +334,8 @@ function normalizeCloudItem(item: Partial<CloudSyncItem> & Pick<CloudSyncItem, '
     content_hash: item.content_hash ?? computeSyncContentHash(item.content_type, item.content),
     deleted_at: item.deleted_at ?? 0,
     html_content: item.html_content ?? null,
+    content_blob_hash: item.content_blob_hash ?? null,
+    html_blob_hash: item.html_blob_hash ?? null,
     source_app: item.source_app ?? 'mobile',
     timestamp: item.timestamp ?? nowMs(),
     preview: item.preview ?? item.content.slice(0, 160),
@@ -291,11 +347,12 @@ function normalizeCloudItem(item: Partial<CloudSyncItem> & Pick<CloudSyncItem, '
 }
 
 function toSyncedEntry(item: CloudSyncItem, index: number): SyncedEntry {
+  const isRichText = item.content_type === 'rich_text';
   return {
     id: `${resolvedContentHash(item)}-${item.timestamp}-${index}`,
-    content_type: item.content_type,
+    content_type: isRichText ? 'text' : item.content_type,
     content: item.content,
-    html_content: item.html_content,
+    html_content: null,
     source_app: item.source_app,
     timestamp: item.timestamp,
     preview: item.preview,
@@ -369,6 +426,115 @@ function parseWebDavOpRefs(xml: string) {
   return Array.from(refs.values()).sort((left, right) =>
     left.device_id.localeCompare(right.device_id) || left.seq - right.seq
   );
+}
+
+function getBlobPath(baseBlobs: string, kind: string, hash: string) {
+  const prefix = hash.length >= 2 ? hash.slice(0, 2) : 'xx';
+  return `${baseBlobs}/${prefix}/${kind}_${hash}.blob`;
+}
+
+function guessImageMime(bytes: Uint8Array) {
+  if (bytes.length >= 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 &&
+    bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 6) {
+    const header = String.fromCharCode(...bytes.slice(0, 6));
+    if (header === 'GIF87a' || header === 'GIF89a') return 'image/gif';
+  }
+  if (bytes.length >= 12) {
+    const riff = String.fromCharCode(...bytes.slice(0, 4));
+    const webp = String.fromCharCode(...bytes.slice(8, 12));
+    if (riff === 'RIFF' && webp === 'WEBP') return 'image/webp';
+  }
+  return 'image/png';
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.slice(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return encodeBase64(binary);
+}
+
+function imageDataUrlFromBytes(bytes: Uint8Array) {
+  const text = new TextDecoder().decode(bytes).trim();
+  if (text.startsWith('data:image/')) {
+    return text;
+  }
+  const mime = guessImageMime(bytes);
+  return `data:${mime};base64,${bytesToBase64(bytes)}`;
+}
+
+async function fetchWebDavBlob(settings: MobileSyncSettings, blobsPath: string, kind: string, hash: string) {
+  const relativePath = getBlobPath(blobsPath, kind, hash);
+  const url = joinWebDavUrl(settings.webdavUrl, relativePath);
+  logWebDavDebug('BLOB request', { url, kind, hash });
+  const response = await fetch(url, {
+    headers: buildAuthHeaders(settings),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    logWebDavDebug('BLOB failed', {
+      url,
+      status: response.status,
+      body: truncateLogText(text),
+    });
+    throw new Error(`WebDAV blob 读取失败：${response.status}${text ? ` ${text}` : ''}`);
+  }
+
+  const buffer = new Uint8Array(await response.arrayBuffer());
+  logWebDavDebug('BLOB success', {
+    url,
+    status: response.status,
+    bytes: buffer.length,
+  });
+  return buffer;
+}
+
+async function enrichCloudItemsAfterPull(items: CloudSyncItem[], settings: MobileSyncSettings, blobsPath: string) {
+  for (const item of items) {
+    if (item.content_blob_hash) {
+      const kind = item.content_type === 'image' ? 'image' : 'content';
+      const bytes = await fetchWebDavBlob(settings, blobsPath, kind, item.content_blob_hash);
+      item.content = item.content_type === 'image'
+        ? imageDataUrlFromBytes(bytes)
+        : new TextDecoder().decode(bytes);
+    }
+
+    if (item.content_type === 'rich_text') {
+      item.html_content = null;
+      item.html_blob_hash = null;
+    } else if (item.html_blob_hash) {
+      const bytes = await fetchWebDavBlob(settings, blobsPath, 'html', item.html_blob_hash);
+      item.html_content = new TextDecoder().decode(bytes);
+    }
+
+    if (!item.preview.trim()) {
+      if (item.content_type === 'image') {
+        item.preview = '图片';
+      } else {
+        item.preview = item.content.slice(0, 160);
+      }
+    }
+  }
+
+  return items;
+}
+
+function isVisibleCloudItem(item: CloudSyncItem) {
+  if (item.deleted_at > 0) return false;
+  return ['text', 'code', 'url', 'rich_text', 'image'].includes(item.content_type);
 }
 
 function dedupeEntries(entries: SyncedEntry[]) {
@@ -480,10 +646,14 @@ async function ensureWebDavDirectories(settings: MobileSyncSettings) {
 }
 
 async function mkcolIfNeeded(settings: MobileSyncSettings, relativePath: string) {
-  const response = await fetch(joinWebDavUrl(settings.webdavUrl, relativePath), {
+  const url = joinWebDavUrl(settings.webdavUrl, relativePath);
+  logWebDavDebug('MKCOL request', { url, relativePath });
+  const response = await fetch(url, {
     method: 'MKCOL',
     headers: buildAuthHeaders(settings),
   });
+
+  logWebDavDebug('MKCOL response', { url, status: response.status });
 
   if (
     response.ok ||
@@ -498,7 +668,9 @@ async function mkcolIfNeeded(settings: MobileSyncSettings, relativePath: string)
 }
 
 async function listWebDavCollection(settings: MobileSyncSettings, relativePath: string) {
-  const response = await fetch(joinWebDavUrl(settings.webdavUrl, relativePath), {
+  const url = joinWebDavUrl(settings.webdavUrl, relativePath);
+  logWebDavDebug('PROPFIND request', { url, relativePath });
+  const response = await fetch(url, {
     method: 'PROPFIND',
     headers: buildAuthHeaders(settings, {
       Depth: '1',
@@ -509,31 +681,62 @@ async function listWebDavCollection(settings: MobileSyncSettings, relativePath: 
 
   if (!response.ok && response.status !== 207) {
     const text = await response.text().catch(() => '');
+    logWebDavDebug('PROPFIND failed', {
+      url,
+      status: response.status,
+      body: truncateLogText(text),
+    });
     throw new Error(`WebDAV 列表读取失败：${response.status}${text ? ` ${text}` : ''}`);
   }
 
-  return response.text();
+  const text = await response.text();
+  logWebDavDebug('PROPFIND success', {
+    url,
+    status: response.status,
+    body: truncateLogText(text),
+  });
+  return text;
 }
 
 async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: string) {
-  const response = await fetch(joinWebDavUrl(settings.webdavUrl, relativePath), {
+  const url = joinWebDavUrl(settings.webdavUrl, relativePath);
+  logWebDavDebug('GET request', { url, relativePath });
+  const response = await fetch(url, {
     headers: buildAuthHeaders(settings),
   });
 
   if (response.status === 404 || response.status === 409) {
+    logWebDavDebug('GET missing', { url, status: response.status });
     return null;
   }
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
+    logWebDavDebug('GET failed', {
+      url,
+      status: response.status,
+      body: truncateLogText(text),
+    });
     throw new Error(`WebDAV 读取失败：${response.status}${text ? ` ${text}` : ''}`);
   }
 
-  return (await response.json()) as T;
+  const text = await response.text();
+  logWebDavDebug('GET success', {
+    url,
+    status: response.status,
+    body: truncateLogText(text),
+  });
+  return JSON.parse(text) as T;
 }
 
 async function putWebDavJson(settings: MobileSyncSettings, relativePath: string, payload: unknown) {
-  const response = await fetch(joinWebDavUrl(settings.webdavUrl, relativePath), {
+  const url = joinWebDavUrl(settings.webdavUrl, relativePath);
+  logWebDavDebug('PUT request', {
+    url,
+    relativePath,
+    body: truncateLogText(JSON.stringify(payload)),
+  });
+  const response = await fetch(url, {
     method: 'PUT',
     headers: buildAuthHeaders(settings, {
       'Content-Type': 'application/json',
@@ -543,8 +746,15 @@ async function putWebDavJson(settings: MobileSyncSettings, relativePath: string,
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
+    logWebDavDebug('PUT failed', {
+      url,
+      status: response.status,
+      body: truncateLogText(text),
+    });
     throw new Error(`WebDAV 写入失败：${response.status}${text ? ` ${text}` : ''}`);
   }
+
+  logWebDavDebug('PUT success', { url, status: response.status });
 }
 
 async function listWebDavSnapshotIds(settings: MobileSyncSettings, devicesPath: string) {
@@ -554,21 +764,25 @@ async function listWebDavSnapshotIds(settings: MobileSyncSettings, devicesPath: 
 async function fetchWebDavSnapshot(
   settings: MobileSyncSettings,
   devicesPath: string,
+  blobsPath: string,
   deviceId: string
 ) {
   const snapshot = await fetchWebDavJson<WebDavDeviceSnapshot>(
     settings,
     `${devicesPath}/${deviceId}.json`
   );
-  return snapshot
-    ? {
+  if (!snapshot) return null;
+
+  const normalized = {
         ...snapshot,
         latest_op_seq: snapshot.latest_op_seq ?? 0,
         entries: Array.isArray(snapshot.entries)
           ? snapshot.entries.map((entry) => normalizeCloudItem(entry))
           : [],
-      }
-    : null;
+      };
+
+  await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
+  return normalized;
 }
 
 function webDavOpsFilename(deviceId: string, seq: number) {
@@ -582,6 +796,7 @@ async function listWebDavOpRefs(settings: MobileSyncSettings, opsPath: string) {
 async function fetchWebDavOpsBatch(
   settings: MobileSyncSettings,
   opsPath: string,
+  blobsPath: string,
   opRef: WebDavOpRef
 ) {
   const batch = await fetchWebDavJson<WebDavOpsBatch>(
@@ -589,14 +804,17 @@ async function fetchWebDavOpsBatch(
     `${opsPath}/${webDavOpsFilename(opRef.device_id, opRef.seq)}`
   );
 
-  return batch
-    ? {
+  if (!batch) return null;
+
+  const normalized = {
         ...batch,
         entries: Array.isArray(batch.entries)
           ? batch.entries.map((entry) => normalizeCloudItem(entry))
           : [],
-      }
-    : null;
+      };
+
+  await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
+  return normalized;
 }
 
 async function fetchWebDavSyncHead(settings: MobileSyncSettings, headPath: string) {
@@ -698,7 +916,7 @@ async function rebuildWebDavSyncHead(settings: MobileSyncSettings, paths: WebDav
   const snapshots = await Promise.all(
     snapshotIds.map(async (deviceId) => ({
       deviceId,
-      snapshot: await fetchWebDavSnapshot(settings, paths.devicesPath, deviceId).catch(() => null),
+      snapshot: await fetchWebDavSnapshot(settings, paths.devicesPath, paths.blobsPath, deviceId).catch(() => null),
     }))
   );
 
@@ -804,10 +1022,20 @@ async function pullRemoteWebDavOpsFromHead(
     if (deviceId === localDeviceId || deviceHead.latest_op_seq <= 0) continue;
 
     let lastSeq = cursorMap[deviceId] ?? 0;
+    if (lastSeq === 0 && (deviceHead.snapshot_op_seq ?? 0) > 0) {
+      // PC 端可能已经清理了早期 ops，只保留 snapshot 之后的增量。
+      lastSeq = deviceHead.snapshot_op_seq ?? 0;
+      cursorMap[deviceId] = lastSeq;
+      logWebDavDebug('Use snapshot_op_seq as incremental baseline', {
+        deviceId,
+        snapshotOpSeq: deviceHead.snapshot_op_seq ?? 0,
+        latestOpSeq: deviceHead.latest_op_seq,
+      });
+    }
     if (deviceHead.latest_op_seq <= lastSeq) continue;
 
     for (let seq = lastSeq + 1; seq <= deviceHead.latest_op_seq; seq += 1) {
-      const batch = await fetchWebDavOpsBatch(settings, paths.opsPath, {
+      const batch = await fetchWebDavOpsBatch(settings, paths.opsPath, paths.blobsPath, {
         device_id: deviceId,
         seq,
       }).catch(() => null);
@@ -842,7 +1070,7 @@ async function pullRemoteWebDavSnapshotsFromHead(
     .map(([deviceId]) => deviceId);
 
   for (const deviceId of remoteDeviceIds) {
-    const snapshot = await fetchWebDavSnapshot(settings, paths.devicesPath, deviceId).catch(() => null);
+    const snapshot = await fetchWebDavSnapshot(settings, paths.devicesPath, paths.blobsPath, deviceId).catch(() => null);
     if (!snapshot) continue;
     nextRemoteItems = mergeCloudItems(nextRemoteItems, snapshot.entries, MAX_REMOTE_SYNC_ITEMS);
   }
@@ -888,14 +1116,14 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     AsyncStorage.getItem(STORAGE_KEYS.pushStrategy),
   ]);
 
-  const parsedLimit = recentLimitRaw === '20' ? 20 : 10;
+  const parsedLimit = recentLimitRaw ? parseInt(recentLimitRaw, 10) : 10;
 
   return {
     webdavUrl: webdavUrl ?? DEFAULT_SETTINGS.webdavUrl,
     webdavUsername: webdavUsername ?? DEFAULT_SETTINGS.webdavUsername,
     webdavPassword: webdavPassword ?? DEFAULT_SETTINGS.webdavPassword,
     webdavBasePath: webdavBasePath ?? DEFAULT_SETTINGS.webdavBasePath,
-    recentLimit: parsedLimit,
+    recentLimit: isNaN(parsedLimit) ? 10 : parsedLimit,
     mqttServer: mqttServer ?? DEFAULT_SETTINGS.mqttServer,
     mqttPort: mqttPort ?? DEFAULT_SETTINGS.mqttPort,
     mqttUsername: mqttUsername ?? DEFAULT_SETTINGS.mqttUsername,
@@ -991,12 +1219,16 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
 
     const pulledItems = await pullRemoteWebDavSnapshotsFromHead(settings, paths, syncHead);
     return dedupeEntries(
-      pulledItems.map((item, index) => toSyncedEntry(item, index))
+      pulledItems
+        .filter((item) => isVisibleCloudItem(item))
+        .map((item, index) => toSyncedEntry(item, index))
     ).sort((left, right) => right.timestamp - left.timestamp);
   } catch (error) {
     if (cachedItems.length > 0) {
       return dedupeEntries(
-        cachedItems.map((item, index) => toSyncedEntry(item, index))
+        cachedItems
+          .filter((item) => isVisibleCloudItem(item))
+          .map((item, index) => toSyncedEntry(item, index))
       ).sort((left, right) => right.timestamp - left.timestamp);
     }
 
@@ -1091,12 +1323,31 @@ export function collectTags(entries: SyncedEntry[]) {
     .map(([tag]) => tag);
 }
 
-export function filterRecentEntries(entries: SyncedEntry[], selectedTag: string | null, limit: RecentLimit) {
-  const filtered = selectedTag
-    ? entries.filter((entry) => entry.tags.includes(selectedTag))
-    : entries;
+export function buildWebDavDisplayRecord(
+  entries: SyncedEntry[],
+  limit: RecentLimit
+): WebDavDisplayRecord {
+  const sortedEntries = [...entries].sort((left, right) => right.timestamp - left.timestamp);
+  const entriesByTag: Record<string, SyncedEntry[]> = {};
 
-  return filtered.slice(0, limit);
+  sortedEntries.forEach((entry) => {
+    const uniqueTags = Array.from(
+      new Set(entry.tags.map((tag) => tag.trim()).filter(Boolean))
+    );
+
+    uniqueTags.forEach((tag) => {
+      if (!entriesByTag[tag]) {
+        entriesByTag[tag] = [];
+      }
+      entriesByTag[tag].push(entry);
+    });
+  });
+
+  return {
+    tags: collectTags(sortedEntries),
+    entriesByTag,
+    recentEntries: sortedEntries.slice(0, limit),
+  };
 }
 
 export function formatRelativeTime(timestamp: number) {

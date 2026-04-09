@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   PanResponder,
@@ -14,14 +14,19 @@ import {
   Linking,
   Animated,
   Dimensions,
+  UIManager,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import AboutScreen from './AboutScreen';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
 import {
+  clearLocalSyncCache,
+  formatCacheSize,
+  getLocalSyncCacheSize,
   loadMobileSyncSettings,
   saveMobileSyncSettings,
   type MobileSyncSettings,
@@ -46,11 +51,17 @@ export default function SettingsScreen() {
   const [isHapticExpanded, setIsHapticExpanded] = useState(false);
   const [isAboutVisible, setIsAboutVisible] = useState(false);
   const [shouldRenderAbout, setShouldRenderAbout] = useState(false);
+  const [localCacheSizeLabel, setLocalCacheSizeLabel] = useState('0 B');
   const sheetEntryAnim = useRef(new Animated.Value(0)).current;
 
   const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthRef = useRef(0);
   const hapticLevelRef = useRef(hapticLevel);
+
+  const refreshLocalCacheSize = async () => {
+    const bytes = await getLocalSyncCacheSize();
+    setLocalCacheSizeLabel(formatCacheSize(bytes));
+  };
 
   const toggleMQTT = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -76,7 +87,14 @@ export default function SettingsScreen() {
       if (val) setHapticLevel(parseInt(val, 10));
     });
     loadMobileSyncSettings().then(setSyncSettings);
+    refreshLocalCacheSize().catch(() => {});
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshLocalCacheSize().catch(() => {});
+    }, [])
+  );
 
   useEffect(() => {
     hapticLevelRef.current = hapticLevel;
@@ -104,9 +122,12 @@ export default function SettingsScreen() {
     }
   };
 
-  const updateSyncField = (field: keyof MobileSyncSettings, value: string | any) => {
-    if (!syncSettings) return;
-    let nextSettings = { ...syncSettings, [field]: value };
+  const buildNextSyncSettings = (
+    currentSettings: MobileSyncSettings,
+    field: keyof MobileSyncSettings,
+    value: string | any
+  ) => {
+    const nextSettings = { ...currentSettings, [field]: value };
     
     // 智能端口切换：当切换协议时，自动填充该协议常用的默认端口
     if (field === 'mqttProtocol') {
@@ -117,7 +138,7 @@ export default function SettingsScreen() {
         'mqtts://': '8883'
       };
       
-      const currentPort = syncSettings.mqttPort;
+      const currentPort = currentSettings.mqttPort;
       // 包含 80, 443 等常见默认端口在内的判定逻辑
       const commonPorts = [...Object.values(protocolPortMap), '80', '443'];
       const isDefaultOrEmpty = !currentPort || commonPorts.includes(currentPort);
@@ -127,7 +148,20 @@ export default function SettingsScreen() {
       }
     }
 
+    return nextSettings;
+  };
+
+  const updateSyncField = async (
+    field: keyof MobileSyncSettings,
+    value: string | any,
+    options?: { persist?: boolean }
+  ) => {
+    if (!syncSettings) return;
+    const nextSettings = buildNextSyncSettings(syncSettings, field, value);
     setSyncSettings(nextSettings);
+    if (options?.persist) {
+      await persistSyncSettings(nextSettings);
+    }
   };
 
   const saveCurrentSyncSettings = async () => {
@@ -235,6 +269,31 @@ export default function SettingsScreen() {
     );
   };
 
+  const handleClearLocalCache = () => {
+    Alert.alert(
+      '清理本地缓存',
+      '会清空手机端已缓存的 WebDAV 拉取记录、增量游标和本地索引，但不会删除你的同步配置。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '清理',
+          style: 'destructive',
+          onPress: async () => {
+            triggerHaptic(5);
+            try {
+              await clearLocalSyncCache();
+              await refreshLocalCacheSize();
+              Alert.alert('清理成功', '本地同步缓存已清空');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : '清理缓存失败';
+              Alert.alert('清理失败', message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const dynamicStyles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     hugeTitle: { fontSize: 36, fontWeight: '700', color: colors.text },
@@ -329,7 +388,7 @@ export default function SettingsScreen() {
             <TouchableOpacity 
               onPress={() => {
                 triggerHaptic();
-                updateSyncField('autoPushOnLaunch', !syncSettings?.autoPushOnLaunch as any);
+                updateSyncField('autoPushOnLaunch', !syncSettings?.autoPushOnLaunch as any, { persist: true });
               }}
               style={{ 
                 width: 50, 
@@ -365,7 +424,10 @@ export default function SettingsScreen() {
                 <TouchableOpacity
                   key={strategy}
                   style={[dynamicStyles.segmentBtn, syncSettings?.pushStrategy === strategy && dynamicStyles.segmentBtnActive]}
-                  onPress={() => updateSyncField('pushStrategy', strategy)}
+                  onPress={() => {
+                    triggerHaptic();
+                    updateSyncField('pushStrategy', strategy, { persist: true });
+                  }}
                 >
                   <Text style={[dynamicStyles.segmentBtnText, syncSettings?.pushStrategy === strategy && dynamicStyles.segmentBtnTextActive]}>
                     {strategy === 'mqtt' ? 'MQTT' : 'WebDAV'}
@@ -488,22 +550,34 @@ export default function SettingsScreen() {
             <View style={dynamicStyles.iconBox}>
               <Feather name="clock" size={18} color={colors.text} />
             </View>
-            <Text style={dynamicStyles.rowText}>最近记录数量</Text>
-            <View style={dynamicStyles.segmentedControl}>
-              {[10, 20].map((limit) => (
-                <TouchableOpacity key={limit} style={[dynamicStyles.segmentBtn, syncSettings?.recentLimit === limit && dynamicStyles.segmentBtnActive]} onPress={() => setRecentLimit(limit as RecentLimit)}>
-                  <Text style={[dynamicStyles.segmentBtnText, syncSettings?.recentLimit === limit && dynamicStyles.segmentBtnTextActive]}>{limit}条</Text>
-                </TouchableOpacity>
-              ))}
+            <Text style={dynamicStyles.rowText}>拉取剪贴板最近数量</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.iconBackground, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 }}>
+              <TextInput
+                value={String(syncSettings?.recentLimit ?? 10)}
+                onChangeText={(text) => {
+                  const val = parseInt(text.replace(/[^0-9]/g, ''), 10);
+                  setRecentLimit(isNaN(val) ? 0 : val);
+                }}
+                keyboardType="numeric"
+                style={{ 
+                  color: colors.text, 
+                  fontSize: 16, 
+                  fontWeight: '600', 
+                  padding: 0, 
+                  minWidth: 40, 
+                  textAlign: 'center' 
+                }}
+              />
+              <Text style={{ color: colors.subText, fontSize: 13, marginLeft: 4 }}>条</Text>
             </View>
           </View>
           <View style={dynamicStyles.divider} />
-          <TouchableOpacity style={styles.row} activeOpacity={0.7} onPress={async () => { triggerHaptic(5); Alert.alert('清理成功', '本地同步缓存已清空'); }}>
+          <TouchableOpacity style={styles.row} activeOpacity={0.7} onPress={handleClearLocalCache}>
             <View style={dynamicStyles.iconBox}>
               <Feather name="trash-2" size={18} color={colors.text} />
             </View>
             <Text style={dynamicStyles.rowText}>清理本地缓存</Text>
-            <Text style={dynamicStyles.valueText}>12.4 MB</Text>
+            <Text style={dynamicStyles.valueText}>{localCacheSizeLabel}</Text>
           </TouchableOpacity>
         </View>
 
