@@ -30,7 +30,13 @@ export async function fetchLatestRelease(): Promise<ReleaseInfo | null> {
       }
     );
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      if (response.status === 404) {
+        console.log('No releases found yet.');
+        return null;
+      }
+      return null;
+    }
 
     const data = await response.json();
     return {
