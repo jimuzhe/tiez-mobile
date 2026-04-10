@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-android:
-    name: 🤖 Build Android (Optimized arm64-v8a)
+    name: 🤖 Build Android (Split & Universal)
     runs-on: ubuntu-latest
     steps:
       - name: 🏗 Checkout
@@ -27,25 +27,37 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: 🏗 Setup EAS
-        uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+      - name: 📦 Install dependencies
+        run: npm install
 
-      - name: 📦 Install dependencies & Clean Native
+      - name: 🛠 Prebuild & Inject ABI Split Config
         run: |
-          rm -rf android ios
-          npm install
+          # 1. 生成原生目录
+          npx expo prebuild --platform android --no-install
+          
+          # 2. 注入开启混淆和压缩
+          sed -i 's/def enableMinifyInReleaseBuilds = false/def enableMinifyInReleaseBuilds = true/g' android/app/build.gradle
+          sed -i 's/def enableShrinkResourcesInReleaseBuilds = false/def enableShrinkResourcesInReleaseBuilds = true/g' android/app/build.gradle
+          
+          # 3. 注入 ABI Split 配置
+          # 在 android { ... } 内部插入分包逻辑
+          sed -i '/android {/a \    splits { abi { enable true; reset(); include "armeabi-v7a", "arm64-v8a", "x86_64"; universalApk true } }' android/app/build.gradle
 
-      - name: 🚀 Build Android (arm64-v8a Only)
-        # 终极手段：通过 CLI 强制透传混淆和架构过滤参数，确保 80MB 降至 20MB
+      - name: 🚀 Build APKs
         run: |
-          eas build --platform android --profile preview --local --non-interactive --output=./TieZ-Android-arm64.apk -- --gradle-args "-PreactNativeArchitectures=arm64-v8a -Pandroid.enableMinifyInReleaseBuilds=true -Pandroid.enableShrinkResourcesInReleaseBuilds=true"
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+          
+          # 提取我们要的两个关键包
+          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk ../TieZ-ARM64.apk
+          cp app/build/outputs/apk/release/app-universal-release.apk ../TieZ-Universal.apk
 
-      - name: 📤 Upload Optimized APK
+      - name: 📤 Upload Optimized APKs
         uses: actions/upload-artifact@v4
         with:
-          name: TieZ-Android-arm64-Optimized
-          path: TieZ-Android-arm64.apk
+          name: TieZ-Android-Packages
+          path: |
+            TieZ-ARM64.apk
+            TieZ-Universal.apk
           retention-days: 7
