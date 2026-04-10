@@ -34,7 +34,9 @@ jobs:
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: 📦 Install dependencies
-        run: npm install
+        run: |
+          rm -rf android ios
+          npm install
 
       - name: 🚀 Build Android Universal APK
         # 强制输出到当前目录下的 app-release.apk
