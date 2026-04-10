@@ -1,38 +1,33 @@
 const { withAppBuildGradle } = require('@expo/config-plugins');
 
 /**
- * Expo Config Plugin to enable separate APKs per CPU architecture (ABI Split)
- * Targets modern React Native versions where the flag might be missing.
+ * Expo Config Plugin to filter Android ABIs to only 'arm64-v8a'
+ * This produces a single, optimized APK for modern devices.
  */
 const withAndroidAbiSplit = (config) => {
   return withAppBuildGradle(config, (config) => {
     if (config.modResults.language === 'groovy') {
-      config.modResults.contents = enableAbiSplit(config.modResults.contents);
+      config.modResults.contents = filterAbis(config.modResults.contents);
     }
     return config;
   });
 };
 
-function enableAbiSplit(buildGradle) {
-  // 如果已经有了，就不重复添加
-  if (buildGradle.includes('splits {') && buildGradle.includes('abi {')) {
+function filterAbis(buildGradle) {
+  // 查找 android.defaultConfig 并在其中插入 ndk { abiFilters "arm64-v8a" }
+  const abiFilterConfig = `
+        ndk {
+            abiFilters "arm64-v8a"
+        }`;
+
+  // 如果已经配置过，就跳过
+  if (buildGradle.includes('abiFilters "arm64-v8a"')) {
     return buildGradle;
   }
 
-  // 在 android { 块中插入 splits 配置
-  // 我们寻找 android { 并在其后插入
-  const splitConfig = `
-    splits {
-        abi {
-            reset()
-            enable true
-            universalApk true
-            include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
-        }
-    }`;
-
-  if (buildGradle.includes('android {')) {
-    return buildGradle.replace('android {', `android {${splitConfig}`);
+  // 我们寻找 defaultConfig { 并在其后插入
+  if (buildGradle.includes('defaultConfig {')) {
+    return buildGradle.replace('defaultConfig {', `defaultConfig {${abiFilterConfig}`);
   }
   
   return buildGradle;

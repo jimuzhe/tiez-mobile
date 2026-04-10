@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-android:
-    name: 🤖 Build Android (Local on GitHub)
+    name: 🤖 Build Android (Universal APK)
     runs-on: ubuntu-latest
     steps:
       - name: 🏗 Checkout
@@ -36,14 +36,14 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install
 
-      - name: 🚀 Build Android locally
-        # 使用 --local 在 GitHub 虚拟机内编译 APK，支持 ABI 分包
+      - name: 🚀 Build Android Universal APK
+        # 强制输出到当前目录下的 app-release.apk
         run: |
-          eas build --platform android --profile preview --local --non-interactive
+          eas build --platform android --profile preview --local --non-interactive --output=./TieZ-Android.apk
 
-      - name: 📤 Upload APK Artifacts
+      - name: 📤 Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: tiez-android-apks
-          path: "**/*.apk"
+          name: TieZ-Android-Download
+          path: TieZ-Android.apk
           retention-days: 7
