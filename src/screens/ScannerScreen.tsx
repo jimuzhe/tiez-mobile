@@ -34,7 +34,7 @@ import * as FileSystem from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as VideoThumbnails from 'expo-video-thumbnails';
-import { Video, ResizeMode } from 'expo-av';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import ImageView from "react-native-image-viewing";
 import { useTheme } from '../theme/ThemeContext';
 
@@ -127,6 +127,16 @@ export default function ScannerScreen() {
   const flatListRef = useRef<FlatList>(null);
   const captureCameraRef = useRef<CameraView | null>(null);
   const isRecordingRef = useRef(false);
+
+  const previewPlayer = useVideoPlayer(previewVideoUrl || '', (player) => {
+    player.play();
+  });
+
+  const capturePlayer = useVideoPlayer(captureDraft?.uri || '', (player) => {
+    player.loop = true;
+    player.play();
+  });
+
   const didLongPressCaptureRef = useRef(false);
   const recordingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordingStartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -889,13 +899,12 @@ export default function ScannerScreen() {
             ) : captureDraft.kind === 'image' ? (
               <Image source={{ uri: captureDraft.uri }} style={styles.capturePreviewMedia} resizeMode="contain" />
             ) : (
-              <Video
-                source={{ uri: captureDraft.uri }}
+              <VideoView
+                player={capturePlayer}
                 style={styles.capturePreviewMedia}
-                resizeMode={ResizeMode.CONTAIN}
-                shouldPlay
-                isLooping
-                useNativeControls
+                contentFit="contain"
+                allowsFullscreen
+                allowsPictureInPicture
               />
             )}
 
@@ -981,12 +990,12 @@ export default function ScannerScreen() {
               <Feather name="x" size={30} color="#FFF" />
             </TouchableOpacity>
             {previewVideoUrl && (
-              <Video
-                source={{ uri: previewVideoUrl }}
+              <VideoView
+                player={previewPlayer}
                 style={styles.fullVideo}
-                useNativeControls
-                resizeMode={ResizeMode.CONTAIN}
-                shouldPlay
+                allowsFullscreen
+                allowsPictureInPicture
+                contentFit="contain"
               />
             )}
           </View>

@@ -17,6 +17,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.jimuzhe.tiez",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "UIApplicationShortcutItems": [
           {
             "UIApplicationShortcutItemType": "scanner",
@@ -104,8 +105,8 @@
         }
       ],
       "expo-video",
-      "expo-audio",
-      "./plugins/withAndroidTile"
+      "./plugins/withAndroidTile",
+      "./plugins/withAndroidAbiSplit"
     ],
     "extra": {
       "eas": {
