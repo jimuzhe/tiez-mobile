@@ -39,9 +39,9 @@ jobs:
           npm install
 
       - name: 🚀 Build Android (arm64-v8a Only)
-        # 强制输出到当前目录
+        # 终极手段：通过 CLI 强制透传混淆和架构过滤参数，确保 80MB 降至 20MB
         run: |
-          eas build --platform android --profile preview --local --non-interactive --output=./TieZ-Android-arm64.apk
+          eas build --platform android --profile preview --local --non-interactive --output=./TieZ-Android-arm64.apk -- --gradle-args "-PreactNativeArchitectures=arm64-v8a -Pandroid.enableMinifyInReleaseBuilds=true -Pandroid.enableShrinkResourcesInReleaseBuilds=true"
 
       - name: 📤 Upload Optimized APK
         uses: actions/upload-artifact@v4
