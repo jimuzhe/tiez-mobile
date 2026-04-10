@@ -8,7 +8,48 @@ on:
       - 'v*'
 
 jobs:
-  build:
+  build-android:
+    name: 🤖 Build Android (Local on GitHub)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🏗 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏗 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: ☕️ Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 🏗 Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📦 Install dependencies
+        run: npm install
+
+      - name: 🚀 Build Android locally
+        # 使用 --local 参数在 GitHub 运行环境内构建 APK
+        run: |
+          eas build --platform android --profile preview --local --non-interactive
+
+      - name: 📤 Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiez-android-build
+          path: "*.apk"
+          retention-days: 7
+
+  build-ios:
+    name: 🍎 Build iOS (Cloud Submit)
     runs-on: ubuntu-latest
     steps:
       - name: 🏗 Checkout
@@ -29,9 +70,8 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install
 
-      - name: 🚀 Build Android (APK)
-        run: eas build --platform android --profile preview --non-interactive
-
-      - name: 🚀 Build iOS (Simulator/IPA)
-        # 注意：IPA 构建需要配置开发者账号证书。这里默认使用 preview 配置。
-        run: eas build --platform ios --profile preview --non-interactive
+      - name: 🚀 Submit iOS Build
+        # iOS 依然提交到云端，因为 GitHub macOS 资源太贵
+        # 使用 --no-wait 提交后立即结束
+        run: |
+          eas build --platform ios --profile preview --non-interactive --no-wait
