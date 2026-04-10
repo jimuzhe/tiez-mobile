@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-android:
-    name: 🤖 Build Android (Universal APK)
+    name: 🤖 Build Android (Optimized arm64-v8a)
     runs-on: ubuntu-latest
     steps:
       - name: 🏗 Checkout
@@ -33,19 +33,19 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: 📦 Install dependencies
+      - name: 📦 Install dependencies & Clean Native
         run: |
           rm -rf android ios
           npm install
 
-      - name: 🚀 Build Android Universal APK
-        # 强制输出到当前目录下的 app-release.apk
+      - name: 🚀 Build Android (arm64-v8a Only)
+        # 强制输出到当前目录
         run: |
-          eas build --platform android --profile preview --local --non-interactive --output=./TieZ-Android.apk
+          eas build --platform android --profile preview --local --non-interactive --output=./TieZ-Android-arm64.apk
 
-      - name: 📤 Upload APK
+      - name: 📤 Upload Optimized APK
         uses: actions/upload-artifact@v4
         with:
-          name: TieZ-Android-Download
-          path: TieZ-Android.apk
+          name: TieZ-Android-arm64-Optimized
+          path: TieZ-Android-arm64.apk
           retention-days: 7

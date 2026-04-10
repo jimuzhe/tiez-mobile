@@ -1,36 +1,26 @@
-const { withAppBuildGradle } = require('@expo/config-plugins');
+const { withGradleProperties } = require('@expo/config-plugins');
 
 /**
- * Expo Config Plugin to filter Android ABIs to only 'arm64-v8a'
- * This produces a single, optimized APK for modern devices.
+ * Expo Config Plugin to shrink Android APK size to the absolute minimum.
+ * 1. Limits architectures to arm64-v8a only.
+ * 2. Enables R8/Minify for code stripping.
+ * 3. Enables Resource Shrinking.
  */
-const withAndroidAbiSplit = (config) => {
-  return withAppBuildGradle(config, (config) => {
-    if (config.modResults.language === 'groovy') {
-      config.modResults.contents = filterAbis(config.modResults.contents);
-    }
+const withAndroidSizeOptimized = (config) => {
+  return withGradleProperties(config, (config) => {
+    const props = [
+      { key: 'reactNativeArchitectures', value: 'arm64-v8a' },
+      { key: 'android.enableMinifyInReleaseBuilds', value: 'true' },
+      { key: 'android.enableShrinkResourcesInReleaseBuilds', value: 'true' }
+    ];
+    
+    props.forEach(({ key, value }) => {
+      config.modResults = config.modResults.filter(item => item.key !== key);
+      config.modResults.push({ type: 'property', key, value });
+    });
+
     return config;
   });
 };
 
-function filterAbis(buildGradle) {
-  // 查找 android.defaultConfig 并在其中插入 ndk { abiFilters "arm64-v8a" }
-  const abiFilterConfig = `
-        ndk {
-            abiFilters "arm64-v8a"
-        }`;
-
-  // 如果已经配置过，就跳过
-  if (buildGradle.includes('abiFilters "arm64-v8a"')) {
-    return buildGradle;
-  }
-
-  // 我们寻找 defaultConfig { 并在其后插入
-  if (buildGradle.includes('defaultConfig {')) {
-    return buildGradle.replace('defaultConfig {', `defaultConfig {${abiFilterConfig}`);
-  }
-  
-  return buildGradle;
-}
-
-module.exports = withAndroidAbiSplit;
+module.exports = withAndroidSizeOptimized;

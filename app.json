@@ -106,14 +106,7 @@
       ],
       "expo-video",
       "./plugins/withAndroidTile",
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "abiFilters": ["arm64-v8a"]
-          }
-        }
-      ]
+      "./plugins/withAndroidAbiSplit"
     ],
     "extra": {
       "eas": {
