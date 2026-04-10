@@ -13,6 +13,11 @@
         "buildType": "apk"
       },
       "ios": {
+        "simulator": true
+      }
+    },
+    "ipa": {
+      "ios": {
         "distribution": "internal"
       }
     },
