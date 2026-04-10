@@ -42,9 +42,8 @@ jobs:
           eas build --platform android --profile preview --local --non-interactive
 
       - name: 📤 Upload APK Artifacts
-        # 自动搜寻并上传所有生成的 APK (如 arm64-v8a 等不同架构版本)
         uses: actions/upload-artifact@v4
         with:
           name: tiez-android-apks
-          path: "*.apk"
+          path: "**/*.apk"
           retention-days: 7
