@@ -36,6 +36,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import Constants from 'expo-constants';
+import { checkUpdate } from '../lib/updateChecker';
+import packageJson from '../../package.json';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -277,40 +279,8 @@ export default function SettingsScreen() {
     if (isCheckingUpdate) return;
     setIsCheckingUpdate(true);
     triggerHaptic();
-
     try {
-      const localVersion = Constants.expoConfig?.version || '1.0.0';
-      
-      // 这里的 URL 你之后可以换成真实的 GitHub API 或你自己的 API 地址
-      const updateUrl = 'https://api.github.com/repos/jimuzhe/tiez-mobile/releases/latest';
-      
-      const response = await fetch(updateUrl).catch(() => null);
-      if (!response || !response.ok) {
-        throw new Error('无法连接到更新服务器');
-      }
-
-      const data = await response.json();
-      const latestVersion = data.tag_name?.replace('v', '') || '1.0.0';
-      const downloadUrl = data.html_url || 'https://github.com/jimuzhe/tiez-mobile/releases';
-
-      // 简单的版本比对逻辑
-      if (latestVersion !== localVersion) {
-        Alert.alert(
-          '发现新版本',
-          `最新版本: v${latestVersion}\n当前版本: v${localVersion}\n\n是否立即前往下载最新版？`,
-          [
-            { text: '稍后再说', style: 'cancel' },
-            { 
-              text: '立即更新', 
-              onPress: () => WebBrowser.openBrowserAsync(downloadUrl) 
-            }
-          ]
-        );
-      } else {
-        Alert.alert('已是最新', `当前版本 v${localVersion} 已是最新，无需更新。`);
-      }
-    } catch (error) {
-      Alert.alert('检查失败', '暂时无法获取更新信息，请检查网络连接。');
+      await checkUpdate(true);
     } finally {
       setIsCheckingUpdate(false);
     }
@@ -703,7 +673,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        <Text style={dynamicStyles.version}>TieZ v0.0.1</Text>
+        <Text style={dynamicStyles.version}>TieZ v{packageJson.version}</Text>
         <View style={{ height: 100 }} />
       </ScrollView>
 
