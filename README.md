@@ -55,9 +55,6 @@ TieZ Mobile 是 [TieZ Clipboard Manager](https://github.com/jimuzhe/tiez-clipboa
   eas build --platform ios
   ```
 
-## 自动化
-
-项目通过 GitHub Actions 配置了 CI/CD 流程。代码推送至主分支后，将自动触发云端构建任务。
 
 ## 开源协议
 
@@ -65,4 +62,4 @@ TieZ Mobile 是 [TieZ Clipboard Manager](https://github.com/jimuzhe/tiez-clipboa
 
 ---
 
-Designed by TieZ Team.
+Designed by TieZ.
