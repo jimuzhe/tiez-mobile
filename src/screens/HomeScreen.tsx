@@ -18,10 +18,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { useTheme } from '../theme/ThemeContext';
+import { useHaptics } from '../context/HapticContext';
 import {
   buildWebDavDisplayRecord,
   fetchWebDavEntries,
@@ -69,8 +69,9 @@ function imageFileExtensionFromUri(content: string) {
   return matched?.[1] || 'jpg';
 }
 
-export default function HomeScreen() {
+export default function HomeScreen({ navigation }: any) {
   const { colors } = useTheme();
+  const { triggerHaptic } = useHaptics();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<HomeMode>('push');
   const [isLoading, setIsLoading] = useState(true);
@@ -146,7 +147,7 @@ export default function HomeScreen() {
       }
 
       await MediaLibrary.saveToLibraryAsync(assetUri);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      triggerHaptic('success');
       showFeedback('已保存到相册');
     } catch (error) {
       const message = error instanceof Error ? error.message : '保存图片失败';
@@ -318,7 +319,7 @@ export default function HomeScreen() {
   }, [currentClipboardEntry, manualInputs]);
 
   const togglePushSelection = useCallback((id: string) => {
-    Haptics.selectionAsync();
+    triggerHaptic('selection');
     setSelectedPushIds((current) =>
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
     );
@@ -343,7 +344,7 @@ export default function HomeScreen() {
   }, [currentClipboardEntry, manualInputs]);
 
   const toggleSelectAllPushEntries = useCallback(() => {
-    Haptics.selectionAsync();
+    triggerHaptic('selection');
     setSelectedPushIds((current) =>
       current.length === pushEntries.length ? [] : pushEntries.map((entry) => entry.id)
     );
@@ -359,7 +360,7 @@ export default function HomeScreen() {
     setIsPushing(true);
     try {
       await pushClipboardBatchToPc(selectedEntries);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      triggerHaptic('success');
       showFeedback(`已推送 ${selectedEntries.length} 条`);
       setSelectedPushIds([]);
       setManualInputs([{ id: `manual-${Date.now()}`, text: '' }]);
@@ -672,7 +673,7 @@ export default function HomeScreen() {
         <TouchableOpacity
           style={[dynamicStyles.tagPill, selectedTag === null && dynamicStyles.tagPillActive]}
           onPress={() => {
-            Haptics.selectionAsync();
+            triggerHaptic('selection');
             setSelectedTag(null);
           }}
         >
@@ -683,7 +684,7 @@ export default function HomeScreen() {
             key={tag}
             style={[dynamicStyles.tagPill, selectedTag === tag && dynamicStyles.tagPillActive]}
             onPress={() => {
-              Haptics.selectionAsync();
+              triggerHaptic('selection');
               setSelectedTag(tag);
             }}
           >
@@ -719,12 +720,12 @@ export default function HomeScreen() {
                   }
 
                   await Clipboard.setStringAsync(entry.content);
-                  await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  triggerHaptic('success');
                   showFeedback('已复制');
                 }}
                 onLongPress={() => {
                   if (!isImageEntry) return;
-                  Haptics.selectionAsync();
+                  triggerHaptic('selection');
                   Alert.alert(
                     '图片操作',
                     '你可以把这张同步图片保存到系统相册。',

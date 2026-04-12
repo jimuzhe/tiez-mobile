@@ -21,9 +21,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import AboutScreen from './AboutScreen';
 import { Feather } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeContext';
+import { useHaptics } from '../context/HapticContext';
 import {
   clearLocalSyncCache,
   formatCacheSize,
@@ -47,8 +47,8 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 export default function SettingsScreen() {
   const { themeMode, setThemeMode, colors } = useTheme();
+  const { hapticLevel, setHapticLevel, triggerHaptic } = useHaptics();
   const insets = useSafeAreaInsets();
-  const [hapticLevel, setHapticLevel] = useState<number>(3);
   const [syncSettings, setSyncSettings] = useState<MobileSyncSettings | null>(null);
   const [isSavingSyncSettings, setIsSavingSyncSettings] = useState(false);
   const [isWebDAVExpanded, setIsWebDAVExpanded] = useState(false);
@@ -89,9 +89,6 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => {
-    AsyncStorage.getItem('hapticLevel').then((val) => {
-      if (val) setHapticLevel(parseInt(val, 10));
-    });
     loadMobileSyncSettings().then(setSyncSettings);
     refreshLocalCacheSize().catch(() => {});
   }, []);
@@ -103,20 +100,10 @@ export default function SettingsScreen() {
   );
 
   useEffect(() => {
-    hapticLevelRef.current = hapticLevel;
     trackWidthRef.current = trackWidth;
-    AsyncStorage.setItem('hapticLevel', hapticLevel.toString());
-  }, [hapticLevel, trackWidth]);
+  }, [trackWidth]);
 
-  const triggerHaptic = (level = hapticLevel) => {
-    if (level === 0) return;
-    const style =
-      level >= 4 ? Haptics.ImpactFeedbackStyle.Heavy :
-      level >= 2 ? Haptics.ImpactFeedbackStyle.Medium :
-      Haptics.ImpactFeedbackStyle.Light;
-
-    Haptics.impactAsync(style);
-  };
+// triggerHaptic is now from useHaptics()
 
   const persistSyncSettings = async (nextSettings: MobileSyncSettings) => {
     setSyncSettings(nextSettings);
@@ -188,9 +175,9 @@ export default function SettingsScreen() {
     if (w === 0) return;
     const clampedX = Math.max(0, Math.min(x, w - 0.1));
     const newLevel = Math.floor((clampedX / w) * 6);
-    if (newLevel !== hapticLevelRef.current && newLevel >= 0 && newLevel <= 5) {
+    if (newLevel !== hapticLevel && newLevel >= 0 && newLevel <= 5) {
       setHapticLevel(newLevel);
-      triggerHaptic(newLevel);
+      triggerHaptic(newLevel as any);
     }
   };
 

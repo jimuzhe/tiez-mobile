@@ -4,18 +4,19 @@ import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { BlurView } from 'expo-blur';
 import { Feather } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 
 import HomeScreen from '../screens/HomeScreen';
 import ScannerScreen from '../screens/ScannerScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import { useTheme } from '../theme/ThemeContext';
+import { useHaptics } from '../context/HapticContext';
 
 const Tab = createBottomTabNavigator();
 
 export default function AppNavigator() {
   const { colors, isDark } = useTheme();
+  const { triggerHaptic } = useHaptics();
 
   const navigationTheme = {
     ...(isDark ? DarkTheme : DefaultTheme),
@@ -33,6 +34,7 @@ export default function AppNavigator() {
     <NavigationContainer theme={navigationTheme}>
       <StatusBar style={isDark ? 'light' : 'dark'} translucent />
       <Tab.Navigator
+        sceneContainerStyle={{ backgroundColor: colors.background }}
         screenOptions={({ route }) => ({
           headerShown: false,
           tabBarShowLabel: true,
@@ -69,7 +71,7 @@ export default function AppNavigator() {
         })}
         screenListeners={{
           tabPress: (e) => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            triggerHaptic('light');
           },
         }}
       >

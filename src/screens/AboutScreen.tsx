@@ -1,13 +1,14 @@
 import { StyleSheet, Text, View, TouchableOpacity, Image, Linking } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
-import * as Haptics from 'expo-haptics';
+import { useHaptics } from '../context/HapticContext';
 
 export default function AboutScreen() {
   const { colors, isDark } = useTheme();
+  const { triggerHaptic } = useHaptics();
 
   const handleLink = (url: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    triggerHaptic('light');
     Linking.openURL(url);
   };
 

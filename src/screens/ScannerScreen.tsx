@@ -24,7 +24,6 @@ import {
 import { Camera, CameraView, useCameraPermissions, type FocusMode } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Crypto from 'expo-crypto';
 import * as ImagePicker from 'expo-image-picker';
@@ -37,6 +36,7 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import ImageView from "react-native-image-viewing";
 import { useTheme } from '../theme/ThemeContext';
+import { useHaptics } from '../context/HapticContext';
 
 const { width } = Dimensions.get('window');
 const MAX_VIDEO_DURATION_SECONDS = 15;
@@ -85,7 +85,7 @@ export default function ScannerScreen() {
   const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
-  const [hapticLevel, setHapticLevel] = useState(3);
+  const { hapticLevel, triggerHaptic } = useHaptics();
 
   // 悬浮菜单状态
   const [menuConfig, setMenuConfig] = useState<{
@@ -147,7 +147,6 @@ export default function ScannerScreen() {
   useEffect(() => {
     initDevice();
     checkPreviousConnection();
-    loadHapticLevel();
     return () => {
       ws.current?.close();
       if (recordingIntervalRef.current) {
@@ -162,19 +161,7 @@ export default function ScannerScreen() {
     };
   }, []);
 
-  const loadHapticLevel = async () => {
-    const level = await AsyncStorage.getItem('hapticLevel');
-    if (level) setHapticLevel(parseInt(level));
-  };
-
-  const triggerUserHaptic = () => {
-    if (hapticLevel === 0) return;
-    const style = 
-      hapticLevel >= 4 ? Haptics.ImpactFeedbackStyle.Heavy :
-      hapticLevel >= 2 ? Haptics.ImpactFeedbackStyle.Medium : 
-      Haptics.ImpactFeedbackStyle.Light;
-    Haptics.impactAsync(style);
-  };
+// triggerHaptic is now from useHaptics()
 
   useEffect(() => {
     if (savedDeviceIp) {
@@ -280,14 +267,14 @@ export default function ScannerScreen() {
   };
 
   const handleBarcodeScanned = async ({ data }: any) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    triggerHaptic('success');
     setIsScanning(false);
     setSavedDeviceIp(data);
     await AsyncStorage.setItem('lastDeviceIp', data);
   };
 
   const clearConnection = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    triggerHaptic('light');
     await AsyncStorage.removeItem('lastDeviceIp');
     setSavedDeviceIp(null);
     setMessages([]);
@@ -314,7 +301,7 @@ export default function ScannerScreen() {
       isOptimistic: true
     };
     setMessages(prev => [...prev, optimisticMsg]);
-    triggerUserHaptic();
+    triggerHaptic();
 
     try {
       const baseIp = savedDeviceIp.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
@@ -331,7 +318,7 @@ export default function ScannerScreen() {
 
   const handlePlusPress = () => {
     Keyboard.dismiss();
-    triggerUserHaptic();
+    triggerHaptic();
     setIsPlusMenuOpen(!isPlusMenuOpen);
   };
 
@@ -616,7 +603,7 @@ export default function ScannerScreen() {
 
       if (response.ok) {
         setUploadProgress(1);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        triggerHaptic('success');
       } else {
         const errorText = await response.text().catch(() => '');
         throw new Error(errorText || `Upload failed with status ${response.status}`);
@@ -633,7 +620,7 @@ export default function ScannerScreen() {
 
   const copyToClipboard = async (text: string) => {
     await Clipboard.setStringAsync(text);
-    if (hapticLevel > 0) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    triggerHaptic('success');
   };
 
   const handleDownload = async (item: Message) => {
@@ -643,7 +630,7 @@ export default function ScannerScreen() {
     const decodedName = decodeURIComponent(fileName);
 
     try {
-      if (hapticLevel > 0) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      triggerHaptic('medium');
       const downloadRes = await LegacyFileSystem.downloadAsync(
         fileUrl,
         `${LegacyFileSystem.documentDirectory ?? ''}${decodedName}`
@@ -664,7 +651,7 @@ export default function ScannerScreen() {
   };
 
   const showMenu = (event: any, item: Message) => {
-    if (hapticLevel > 0) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    triggerHaptic('heavy');
     const { pageX, pageY } = event.nativeEvent;
     
     // 动态计算菜单宽度（按钮数量不同）
