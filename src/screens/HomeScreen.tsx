@@ -153,7 +153,7 @@ export default function HomeScreen({ navigation }: any) {
       const message = error instanceof Error ? error.message : '保存图片失败';
       Alert.alert('保存失败', message);
     }
-  }, [showFeedback]);
+  }, [showFeedback, triggerHaptic]);
 
   const captureClipboardSnapshot = useCallback(async () => {
     try {
@@ -304,7 +304,7 @@ export default function HomeScreen({ navigation }: any) {
     return () => {
       subscription.remove();
     };
-  }, [loadHomeData, captureClipboardSnapshot]);
+  }, [loadHomeData, captureClipboardSnapshot, navigation, triggerHaptic]);
 
   useEffect(() => {
     setSelectedPushIds((current) =>
@@ -323,7 +323,7 @@ export default function HomeScreen({ navigation }: any) {
     setSelectedPushIds((current) =>
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
     );
-  }, []);
+  }, [triggerHaptic]);
 
   const pushEntries = useMemo(() => {
     const entries: LocalClipboardEntry[] = [];
@@ -348,7 +348,7 @@ export default function HomeScreen({ navigation }: any) {
     setSelectedPushIds((current) =>
       current.length === pushEntries.length ? [] : pushEntries.map((entry) => entry.id)
     );
-  }, [pushEntries]);
+  }, [pushEntries, triggerHaptic]);
 
   const pushSelectedEntries = useCallback(async () => {
     const selectedEntries = pushEntries.filter((entry) => selectedPushIds.includes(entry.id));
@@ -370,7 +370,7 @@ export default function HomeScreen({ navigation }: any) {
     } finally {
       setIsPushing(false);
     }
-  }, [pushEntries, selectedPushIds]);
+  }, [pushEntries, selectedPushIds, showFeedback, triggerHaptic]);
 
   const refreshPushPage = useCallback(async () => {
     setRefreshing(true);

@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-type HapticStyle = Haptics.ImpactFeedbackStyle | 'selection' | 'success' | 'warning' | 'error' | 'light' | 'medium' | 'heavy';
+type HapticStyle = number | Haptics.ImpactFeedbackStyle | 'selection' | 'success' | 'warning' | 'error' | 'light' | 'medium' | 'heavy';
 
 interface HapticContextType {
   hapticLevel: number;
@@ -14,23 +14,33 @@ const HapticContext = createContext<HapticContextType | undefined>(undefined);
 
 export const HapticProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [hapticLevel, setLevel] = useState<number>(3);
+  const hapticLevelRef = useRef(3);
 
   useEffect(() => {
     AsyncStorage.getItem('hapticLevel').then(val => {
       if (val !== null) {
         const parsed = parseInt(val, 10);
-        if (!isNaN(parsed)) setLevel(parsed);
+        if (!isNaN(parsed)) {
+          hapticLevelRef.current = parsed;
+          setLevel(parsed);
+        }
       }
     });
   }, []);
 
-  const setHapticLevel = async (level: number) => {
+  useEffect(() => {
+    hapticLevelRef.current = hapticLevel;
+  }, [hapticLevel]);
+
+  const setHapticLevel = useCallback(async (level: number) => {
+    hapticLevelRef.current = level;
     setLevel(level);
     await AsyncStorage.setItem('hapticLevel', level.toString());
-  };
+  }, []);
 
   const triggerHaptic = useCallback((style?: HapticStyle) => {
-    if (hapticLevel === 0) return;
+    const currentLevel = hapticLevelRef.current;
+    if (currentLevel === 0) return;
 
     if (style === 'selection') {
       Haptics.selectionAsync();
@@ -58,17 +68,17 @@ export const HapticProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } else if (style === 'heavy') {
       impactStyle = Haptics.ImpactFeedbackStyle.Heavy;
     } else if (typeof style === 'number') {
-      impactStyle = style;
+      impactStyle = style as unknown as Haptics.ImpactFeedbackStyle;
     } else {
       // Default behavior based on level
       impactStyle = 
-        hapticLevel >= 4 ? Haptics.ImpactFeedbackStyle.Heavy :
-        hapticLevel >= 2 ? Haptics.ImpactFeedbackStyle.Medium :
+        currentLevel >= 4 ? Haptics.ImpactFeedbackStyle.Heavy :
+        currentLevel >= 2 ? Haptics.ImpactFeedbackStyle.Medium :
         Haptics.ImpactFeedbackStyle.Light;
     }
 
     Haptics.impactAsync(impactStyle);
-  }, [hapticLevel]);
+  }, []);
 
   return (
     <HapticContext.Provider value={{ hapticLevel, setHapticLevel, triggerHaptic }}>

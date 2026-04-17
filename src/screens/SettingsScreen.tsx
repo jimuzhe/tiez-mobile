@@ -100,6 +100,10 @@ export default function SettingsScreen() {
   );
 
   useEffect(() => {
+    hapticLevelRef.current = hapticLevel;
+  }, [hapticLevel]);
+
+  useEffect(() => {
     trackWidthRef.current = trackWidth;
   }, [trackWidth]);
 
@@ -175,9 +179,10 @@ export default function SettingsScreen() {
     if (w === 0) return;
     const clampedX = Math.max(0, Math.min(x, w - 0.1));
     const newLevel = Math.floor((clampedX / w) * 6);
-    if (newLevel !== hapticLevel && newLevel >= 0 && newLevel <= 5) {
+    if (newLevel !== hapticLevelRef.current && newLevel >= 0 && newLevel <= 5) {
+      hapticLevelRef.current = newLevel;
       setHapticLevel(newLevel);
-      triggerHaptic(newLevel as any);
+      triggerHaptic(newLevel);
     }
   };
 

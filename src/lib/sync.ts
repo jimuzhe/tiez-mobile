@@ -555,7 +555,22 @@ function dedupeEntries(entries: SyncedEntry[]) {
 }
 
 async function loadJsonStorage<T>(key: string, fallback: T): Promise<T> {
-  const raw = await AsyncStorage.getItem(key);
+  let raw: string | null = null;
+
+  try {
+    raw = await AsyncStorage.getItem(key);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logWebDavDebug('AsyncStorage read failed', { key, message });
+
+    // Android may fail to read oversized rows from CursorWindow. Drop the bad cache
+    // entry so the next sync can recover from remote state instead of crashing forever.
+    if (message.includes('CursorWindow') || message.includes('Row too big')) {
+      await AsyncStorage.removeItem(key).catch(() => {});
+    }
+    return fallback;
+  }
+
   if (!raw) return fallback;
 
   try {
@@ -567,6 +582,24 @@ async function loadJsonStorage<T>(key: string, fallback: T): Promise<T> {
 
 async function saveJsonStorage(key: string, value: unknown) {
   await AsyncStorage.setItem(key, JSON.stringify(value));
+}
+
+function compactCloudItemForCache(item: CloudSyncItem): CloudSyncItem {
+  const normalized = normalizeCloudItem(item);
+
+  if (!normalized.content_blob_hash && !normalized.html_blob_hash) {
+    return normalized;
+  }
+
+  const compactContent = normalized.content_blob_hash
+    ? (normalized.content_type === 'image' ? '[image content]' : normalized.preview.slice(0, 160))
+    : normalized.content;
+
+  return {
+    ...normalized,
+    content: compactContent,
+    html_content: normalized.html_blob_hash ? null : normalized.html_content,
+  };
 }
 
 async function getMobileWebDavDeviceId() {
@@ -611,7 +644,9 @@ async function loadWebDavLocalItems() {
 async function saveWebDavLocalItems(items: CloudSyncItem[]) {
   await saveJsonStorage(
     STORAGE_KEYS.webdavLocalItems,
-    sortCloudItemsDesc(items).slice(0, MAX_LOCAL_SYNC_ITEMS)
+    sortCloudItemsDesc(items)
+      .slice(0, MAX_LOCAL_SYNC_ITEMS)
+      .map((item) => compactCloudItemForCache(item))
   );
 }
 
@@ -623,7 +658,9 @@ async function loadWebDavPulledItems() {
 async function saveWebDavPulledItems(items: CloudSyncItem[]) {
   await saveJsonStorage(
     STORAGE_KEYS.webdavPulledItems,
-    sortCloudItemsDesc(items).slice(0, MAX_REMOTE_SYNC_ITEMS)
+    sortCloudItemsDesc(items)
+      .slice(0, MAX_REMOTE_SYNC_ITEMS)
+      .map((item) => compactCloudItemForCache(item))
   );
 }
 
