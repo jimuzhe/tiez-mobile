@@ -5,8 +5,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
 
 permissions:
   contents: write
@@ -39,8 +37,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Detect release tag on current commit
+        id: release_meta
+        shell: bash
+        run: |
+          git fetch --force --tags
+          TAG_NAME="$(git tag --points-at HEAD | grep '^v' | head -n 1 || true)"
+          if [ -n "$TAG_NAME" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate Android native project
-        run: npx expo prebuild --platform android --non-interactive --no-install
+        run: CI=1 npx expo prebuild --platform android --no-install
 
       - name: Enable ABI split outputs
         shell: bash
@@ -77,9 +88,10 @@ jobs:
           retention-days: 7
 
       - name: Upload Android assets to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.release_meta.outputs.is_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
           files: |
             android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
             android/app/build/outputs/apk/release/app-armeabi-v7a-release.apk
@@ -107,18 +119,58 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Detect release tag on current commit
+        id: release_meta
+        shell: bash
+        run: |
+          git fetch --force --tags
+          TAG_NAME="$(git tag --points-at HEAD | grep '^v' | head -n 1 || true)"
+          if [ -n "$TAG_NAME" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate iOS native project
-        run: npx expo prebuild --platform ios --non-interactive --no-install
+        run: CI=1 npx expo prebuild --platform ios --no-install
 
       - name: Install CocoaPods
         working-directory: ios
         run: pod install
 
+      - name: Resolve iOS build paths
+        id: ios_paths
+        shell: bash
+        run: |
+          WORKSPACE_PATH="$(find ios -maxdepth 1 -name '*.xcworkspace' | head -n 1 || true)"
+          PROJECT_PATH="$(find ios -maxdepth 1 -name '*.xcodeproj' | head -n 1 || true)"
+          SCHEME_NAME="$(basename "${PROJECT_PATH%.xcodeproj}")"
+
+          if [ -n "$WORKSPACE_PATH" ]; then
+            echo "container_flag=-workspace" >> "$GITHUB_OUTPUT"
+            echo "container_path=$WORKSPACE_PATH" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PROJECT_PATH" ]; then
+            echo "container_flag=-project" >> "$GITHUB_OUTPUT"
+            echo "container_path=$PROJECT_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unable to find an iOS workspace or project after prebuild." >&2
+            find ios -maxdepth 2 -type f | sort >&2 || true
+            exit 1
+          fi
+
+          if [ -z "$SCHEME_NAME" ]; then
+            echo "Unable to determine an iOS scheme name." >&2
+            exit 1
+          fi
+
+          echo "scheme_name=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Build unsigned iOS app
         run: |
           xcodebuild \
-            -workspace ios/tiezmobile.xcworkspace \
-            -scheme tiezmobile \
+            ${{ steps.ios_paths.outputs.container_flag }} "${{ steps.ios_paths.outputs.container_path }}" \
+            -scheme "${{ steps.ios_paths.outputs.scheme_name }}" \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
@@ -143,7 +195,8 @@ jobs:
           retention-days: 7
 
       - name: Upload iOS asset to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.release_meta.outputs.is_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
           files: ${{ runner.temp }}/ios-export/TieZ-mobile.ipa
