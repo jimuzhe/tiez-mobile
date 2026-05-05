@@ -13,6 +13,9 @@ import {
   Dimensions,
   Linking,
   View,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Feather } from '@expo/vector-icons';
@@ -88,6 +91,16 @@ export default function HomeScreen({ navigation }: any) {
   ]);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const feedbackAnim = useRef(new Animated.Value(0)).current;
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const showFeedback = useCallback((message: string) => {
     setFeedbackMessage(message);
@@ -388,28 +401,7 @@ export default function HomeScreen({ navigation }: any) {
       setSettings(nextSettings);
       const webDavRecord = buildWebDavDisplayRecord(
         await fetchWebDavEntries(nextSettings),
-        nextSettings.recentLimit
-      );
-      setPullRecord(webDavRecord);
-      setSelectedTag((current) => {
-        if (!current) return null;
-        return webDavRecord.tags.includes(current) ? current : null;
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '拉取失败';
-      Alert.alert('拉取失败', message);
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
-
-  const pullTags = pullRecord.tags;
-  const visiblePullEntries = useMemo(() => {
-    if (!selectedTag) return pullRecord.recentEntries;
-    return pullRecord.entriesByTag[selectedTag] ?? [];
-  }, [pullRecord, selectedTag]);
-
-  const dynamicStyles = StyleSheet.create({
+        next  const dynamicStyles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     hugeTitle: { fontSize: 36, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
     topChrome: {
@@ -575,6 +567,31 @@ export default function HomeScreen({ navigation }: any) {
       fontSize: 13,
       fontWeight: '600',
     },
+  }), [colors, insets, isPushing]);
+     alignSelf: 'center',
+      minWidth: 96,
+      maxWidth: 160,
+      bottom: 156 + Math.max(insets.bottom, 12),
+      backgroundColor: colors.card,
+      borderRadius: 999,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.divider,
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.08,
+      shadowRadius: 12,
+      elevation: 5,
+      zIndex: 999,
+    },
+    feedbackText: {
+      color: colors.text,
+      fontSize: 13,
+      fontWeight: '600',
+    },
   });
 
   const renderPushPage = () => (
@@ -672,6 +689,7 @@ export default function HomeScreen({ navigation }: any) {
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tagScroll} contentContainerStyle={{ paddingRight: 20 }}>
         <TouchableOpacity
           style={[dynamicStyles.tagPill, selectedTag === null && dynamicStyles.tagPillActive]}
+          activeOpacity={0.7}
           onPress={() => {
             triggerHaptic('selection');
             setSelectedTag(null);
@@ -683,6 +701,7 @@ export default function HomeScreen({ navigation }: any) {
           <TouchableOpacity
             key={tag}
             style={[dynamicStyles.tagPill, selectedTag === tag && dynamicStyles.tagPillActive]}
+            activeOpacity={0.7}
             onPress={() => {
               triggerHaptic('selection');
               setSelectedTag(tag);
@@ -796,7 +815,11 @@ export default function HomeScreen({ navigation }: any) {
   );
 
   return (
-    <View style={dynamicStyles.container}>
+    <KeyboardAvoidingView 
+      style={dynamicStyles.container} 
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+    >
       {feedbackMessage ? (
         <Animated.View
           pointerEvents="none"
@@ -851,7 +874,7 @@ export default function HomeScreen({ navigation }: any) {
         contentContainerStyle={[
           styles.scrollContent,
           mode === 'push' && !isLoading
-            ? [styles.pushScrollContent, { paddingBottom: 190 + Math.max(insets.bottom, 12) }]
+            ? [styles.pushScrollContent, { paddingBottom: (isKeyboardVisible ? 100 : 190) + Math.max(insets.bottom, 12) }]
             : styles.pullScrollContent,
         ]}
         showsVerticalScrollIndicator={false}
@@ -878,7 +901,7 @@ export default function HomeScreen({ navigation }: any) {
       </ScrollView>
 
       {mode === 'push' && !isLoading ? (
-        <View style={dynamicStyles.pushBottomActionsWrap}>
+        <View style={[dynamicStyles.pushBottomActionsWrap, isKeyboardVisible && { bottom: 20 }]}>
           <Text style={dynamicStyles.bottomHint}>下拉会重新读取当前手机剪贴板。</Text>
           <View style={dynamicStyles.rowActions}>
             <TouchableOpacity style={[dynamicStyles.secondaryAction, styles.flexAction]} onPress={toggleSelectAllPushEntries}>
@@ -902,7 +925,7 @@ export default function HomeScreen({ navigation }: any) {
           </View>
         </View>
       ) : null}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

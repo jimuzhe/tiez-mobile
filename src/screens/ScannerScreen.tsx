@@ -37,6 +37,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import ImageView from "react-native-image-viewing";
 import { useTheme } from '../theme/ThemeContext';
 import { useHaptics } from '../context/HapticContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width } = Dimensions.get('window');
 const MAX_VIDEO_DURATION_SECONDS = 15;
@@ -86,6 +87,7 @@ export default function ScannerScreen() {
   const [deviceId, setDeviceId] = useState('');
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const { hapticLevel, triggerHaptic } = useHaptics();
+  const insets = useSafeAreaInsets();
 
   // 悬浮菜单状态
   const [menuConfig, setMenuConfig] = useState<{
@@ -143,6 +145,16 @@ export default function ScannerScreen() {
   const focusIndicatorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pinchStartDistanceRef = useRef<number | null>(null);
   const pinchStartZoomRef = useRef(0);
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     initDevice();
@@ -769,14 +781,14 @@ export default function ScannerScreen() {
 
   if (savedDeviceIp && !isScanning) {
     return (
-      <View style={[styles.container, { paddingTop: Platform.OS === 'ios' ? 50 : 20 }]}>
+      <View style={[styles.container, { paddingTop: insets.top || 20 }]}>
         <View style={styles.chatHeader}>
           <TouchableOpacity onPress={clearConnection} style={styles.iconBtn}><Feather name="chevron-left" size={24} color={colors.text} /></TouchableOpacity>
           <Text style={styles.headerTitle}>文件传输</Text>
           <View style={{ width: 40 }} />
         </View>
 
-        <View style={{ flex: 1, paddingBottom: 85 }}>
+        <View style={{ flex: 1, paddingBottom: (isKeyboardVisible || isPlusMenuOpen) ? 0 : 85 }}>
           <FlatList
             ref={flatListRef}
             data={messages}
@@ -810,8 +822,9 @@ export default function ScannerScreen() {
           />
 
           <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
             keyboardVerticalOffset={Platform.OS === 'ios' ? 115 : 0}
+            style={{ backgroundColor: colors.background }}
           >
             <View style={styles.inputBar}>
               <TouchableOpacity style={styles.plusBtn} onPress={handlePlusPress} disabled={isUploading}>
