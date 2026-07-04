@@ -687,7 +687,10 @@ async function mkcolIfNeeded(settings: MobileSyncSettings, relativePath: string)
   logWebDavDebug('MKCOL request', { url, relativePath });
   const response = await fetch(url, {
     method: 'MKCOL',
-    headers: buildAuthHeaders(settings),
+    headers: buildAuthHeaders(settings, {
+      'Content-Type': 'application/xml',
+    }),
+    body: '',  // OkHttp 要求非 GET/HEAD/OPTIONS/TRACE/DELETE 方法必须有 body，即使是空的
   });
 
   logWebDavDebug('MKCOL response', { url, status: response.status });
