@@ -11,7 +11,9 @@ const withAndroidTile = (config) => {
       mainApplication.service = [];
     }
 
-    // 添加 TileService
+    mainApplication.service = mainApplication.service.filter(
+      (service) => service.$?.['android:name'] !== '.TiezTileService'
+    );
     mainApplication.service.push({
       $: {
         'android:name': '.TiezTileService',
@@ -56,10 +58,9 @@ public class TiezTileService extends TileService {
     }
 }`;
 
-      const projectRoot = config.modRequest.projectRoot;
       const filePath = path.join(
-        projectRoot,
-        'android/app/src/main/java',
+        config.modRequest.platformProjectRoot,
+        'app/src/main/java',
         packagePath,
         'TiezTileService.java'
       );

@@ -1,4 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import {
+  buildTransferHeaders,
+  buildTransferUrl,
+  loadStoredTransferConnection,
+  parseTransferConnection,
+} from './transferConnection';
 
 export type RecentLimit = number;
 export type PushStrategy = 'mqtt' | 'webdav';
@@ -124,7 +131,6 @@ export const STORAGE_KEYS = {
   autoPushOnLaunch: 'mobile.auto_push_on_launch',
   pushStrategy: 'mobile.push_strategy',
   recentLimit: 'mobile.home_recent_limit',
-  lastDeviceIp: 'lastDeviceIp',
   pushHistory: 'mobile.push_clipboard_history',
   webdavDeviceId: 'mobile.cloud_sync_webdav_device_id',
   webdavLocalSeq: 'mobile.cloud_sync_webdav_local_seq',
@@ -172,6 +178,58 @@ const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
   </d:prop>
 </d:propfind>`;
 const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+const SENSITIVE_SETTING_KEYS = [
+  STORAGE_KEYS.webdavUsername,
+  STORAGE_KEYS.webdavPassword,
+  STORAGE_KEYS.mqttUsername,
+  STORAGE_KEYS.mqttPassword,
+] as const;
+
+async function isSecureStoreAvailable() {
+  try {
+    return await SecureStore.isAvailableAsync();
+  } catch {
+    return false;
+  }
+}
+
+async function loadSensitiveSetting(key: (typeof SENSITIVE_SETTING_KEYS)[number]) {
+  const legacyValue = await AsyncStorage.getItem(key);
+  if (!(await isSecureStoreAvailable())) {
+    return legacyValue;
+  }
+
+  const secureValue = await SecureStore.getItemAsync(key);
+  if (secureValue != null) {
+    if (legacyValue != null) {
+      await AsyncStorage.removeItem(key);
+    }
+    return secureValue;
+  }
+
+  if (legacyValue != null) {
+    await SecureStore.setItemAsync(key, legacyValue);
+    await AsyncStorage.removeItem(key);
+  }
+  return legacyValue;
+}
+
+async function saveSensitiveSetting(
+  key: (typeof SENSITIVE_SETTING_KEYS)[number],
+  value: string
+) {
+  if (!(await isSecureStoreAvailable())) {
+    await AsyncStorage.setItem(key, value);
+    return;
+  }
+
+  if (value) {
+    await SecureStore.setItemAsync(key, value);
+  } else {
+    await SecureStore.deleteItemAsync(key);
+  }
+  await AsyncStorage.removeItem(key);
+}
 
 function nowMs() {
   return Date.now();
@@ -295,11 +353,51 @@ function hashString(input: string) {
   return Math.abs(hash >>> 0);
 }
 
+function decodeBase64Bytes(value: string) {
+  const clean = value.replace(/\s+/g, '').replace(/=+$/g, '');
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+
+  for (const character of clean) {
+    const index = base64Chars.indexOf(character);
+    if (index < 0 || index >= 64) continue;
+    buffer = (buffer << 6) | index;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 0xff);
+    }
+  }
+
+  return Uint8Array.from(bytes);
+}
+
+function hashBytes(bytes: Uint8Array) {
+  let hash = 2166136261;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) || 1;
+}
+
 function computeSyncContentHash(contentType: string, content: string) {
-  return hashString(`${contentType}:${content}`);
+  if (contentType === 'image') {
+    const trimmed = content.trim();
+    const commaIndex = trimmed.indexOf(',');
+    if (trimmed.startsWith('data:') && commaIndex >= 0) {
+      return hashBytes(decodeBase64Bytes(trimmed.slice(commaIndex + 1)));
+    }
+  }
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return hashBytes(new TextEncoder().encode(normalized));
 }
 
 function resolvedContentHash(item: CloudSyncItem) {
+  if (item.deleted_at === 0 && item.content) {
+    return computeSyncContentHash(item.content_type, item.content);
+  }
   return item.content_hash || computeSyncContentHash(item.content_type, item.content);
 }
 
@@ -328,11 +426,17 @@ function syncDigestForItem(item: CloudSyncItem) {
 }
 
 function normalizeCloudItem(item: Partial<CloudSyncItem> & Pick<CloudSyncItem, 'content_type' | 'content'>): CloudSyncItem {
+  const deletedAt = item.deleted_at ?? 0;
+  const contentHash =
+    deletedAt === 0 && item.content && !item.content_blob_hash
+      ? computeSyncContentHash(item.content_type, item.content)
+      : item.content_hash ?? computeSyncContentHash(item.content_type, item.content);
+
   return {
     content_type: item.content_type,
     content: item.content,
-    content_hash: item.content_hash ?? computeSyncContentHash(item.content_type, item.content),
-    deleted_at: item.deleted_at ?? 0,
+    content_hash: contentHash,
+    deleted_at: deletedAt,
     html_content: item.html_content ?? null,
     content_blob_hash: item.content_blob_hash ?? null,
     html_blob_hash: item.html_blob_hash ?? null,
@@ -526,6 +630,10 @@ async function enrichCloudItemsAfterPull(items: CloudSyncItem[], settings: Mobil
       } else {
         item.preview = item.content.slice(0, 160);
       }
+    }
+
+    if (item.deleted_at === 0 && item.content) {
+      item.content_hash = computeSyncContentHash(item.content_type, item.content);
     }
   }
 
@@ -881,7 +989,66 @@ async function uploadWebDavSyncHead(
   headPath: string,
   head: WebDavSyncHead
 ) {
-  await putWebDavJson(settings, headPath, head);
+  let candidate: WebDavSyncHead = {
+    updated_at: head.updated_at,
+    devices: Object.fromEntries(
+      Object.entries(head.devices).map(([deviceId, device]) => [deviceId, { ...device }])
+    ),
+  };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const latest = await fetchWebDavSyncHead(settings, headPath).catch(() => null);
+    if (latest) {
+      mergeWebDavSyncHeads(candidate, latest);
+    }
+
+    candidate.updated_at = Math.max(candidate.updated_at, nowMs());
+    await putWebDavJson(settings, headPath, candidate);
+
+    const verified = await fetchWebDavSyncHead(settings, headPath);
+    if (verified && webDavSyncHeadCovers(verified, candidate)) {
+      head.updated_at = verified.updated_at;
+      head.devices = verified.devices;
+      return;
+    }
+
+    if (verified) {
+      mergeWebDavSyncHeads(candidate, verified);
+    }
+  }
+
+  throw new Error('WebDAV 同步索引发生并发覆盖，重试后仍未能确认写入');
+}
+
+function mergeWebDavSyncHeads(base: WebDavSyncHead, incoming: WebDavSyncHead) {
+  for (const [deviceId, incomingDevice] of Object.entries(incoming.devices)) {
+    updateWebDavHeadDevice(base, deviceId, (device) => {
+      device.latest_op_seq = Math.max(device.latest_op_seq, incomingDevice.latest_op_seq);
+      device.snapshot_updated_at = Math.max(
+        device.snapshot_updated_at,
+        incomingDevice.snapshot_updated_at
+      );
+      device.snapshot_op_seq = Math.max(device.snapshot_op_seq, incomingDevice.snapshot_op_seq);
+      device.settings_updated_at = Math.max(
+        device.settings_updated_at,
+        incomingDevice.settings_updated_at
+      );
+    });
+  }
+  base.updated_at = Math.max(base.updated_at, incoming.updated_at);
+}
+
+function webDavSyncHeadCovers(actual: WebDavSyncHead, expected: WebDavSyncHead) {
+  return Object.entries(expected.devices).every(([deviceId, expectedDevice]) => {
+    const actualDevice = actual.devices[deviceId];
+    return (
+      actualDevice != null &&
+      actualDevice.latest_op_seq >= expectedDevice.latest_op_seq &&
+      actualDevice.snapshot_updated_at >= expectedDevice.snapshot_updated_at &&
+      actualDevice.snapshot_op_seq >= expectedDevice.snapshot_op_seq &&
+      actualDevice.settings_updated_at >= expectedDevice.settings_updated_at
+    );
+  });
 }
 
 async function uploadWebDavOpsBatch(
@@ -1136,14 +1303,14 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     pushStrategy,
   ] = await Promise.all([
     AsyncStorage.getItem(STORAGE_KEYS.webdavUrl),
-    AsyncStorage.getItem(STORAGE_KEYS.webdavUsername),
-    AsyncStorage.getItem(STORAGE_KEYS.webdavPassword),
+    loadSensitiveSetting(STORAGE_KEYS.webdavUsername),
+    loadSensitiveSetting(STORAGE_KEYS.webdavPassword),
     AsyncStorage.getItem(STORAGE_KEYS.webdavBasePath),
     AsyncStorage.getItem(STORAGE_KEYS.recentLimit),
     AsyncStorage.getItem(STORAGE_KEYS.mqttServer),
     AsyncStorage.getItem(STORAGE_KEYS.mqttPort),
-    AsyncStorage.getItem(STORAGE_KEYS.mqttUsername),
-    AsyncStorage.getItem(STORAGE_KEYS.mqttPassword),
+    loadSensitiveSetting(STORAGE_KEYS.mqttUsername),
+    loadSensitiveSetting(STORAGE_KEYS.mqttPassword),
     AsyncStorage.getItem(STORAGE_KEYS.mqttTopic),
     AsyncStorage.getItem(STORAGE_KEYS.mqttClientId),
     AsyncStorage.getItem(STORAGE_KEYS.mqttProtocol),
@@ -1178,14 +1345,10 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
 export async function saveMobileSyncSettings(settings: MobileSyncSettings) {
   await AsyncStorage.multiSet([
     [STORAGE_KEYS.webdavUrl, settings.webdavUrl.trim()],
-    [STORAGE_KEYS.webdavUsername, settings.webdavUsername.trim()],
-    [STORAGE_KEYS.webdavPassword, settings.webdavPassword],
     [STORAGE_KEYS.webdavBasePath, normalizeWebDavBasePath(settings.webdavBasePath)],
     [STORAGE_KEYS.recentLimit, String(settings.recentLimit)],
     [STORAGE_KEYS.mqttServer, settings.mqttServer.trim()],
     [STORAGE_KEYS.mqttPort, settings.mqttPort.trim()],
-    [STORAGE_KEYS.mqttUsername, settings.mqttUsername.trim()],
-    [STORAGE_KEYS.mqttPassword, settings.mqttPassword],
     [STORAGE_KEYS.mqttTopic, settings.mqttTopic.trim()],
     [STORAGE_KEYS.mqttClientId, settings.mqttClientId.trim()],
     [STORAGE_KEYS.mqttProtocol, settings.mqttProtocol],
@@ -1193,6 +1356,12 @@ export async function saveMobileSyncSettings(settings: MobileSyncSettings) {
     [STORAGE_KEYS.mqttTlsInsecure, String(settings.mqttTlsInsecure)],
     [STORAGE_KEYS.autoPushOnLaunch, String(settings.autoPushOnLaunch)],
     [STORAGE_KEYS.pushStrategy, settings.pushStrategy],
+  ]);
+  await Promise.all([
+    saveSensitiveSetting(STORAGE_KEYS.webdavUsername, settings.webdavUsername.trim()),
+    saveSensitiveSetting(STORAGE_KEYS.webdavPassword, settings.webdavPassword),
+    saveSensitiveSetting(STORAGE_KEYS.mqttUsername, settings.mqttUsername.trim()),
+    saveSensitiveSetting(STORAGE_KEYS.mqttPassword, settings.mqttPassword),
   ]);
 }
 
@@ -1274,15 +1443,15 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
 }
 
 export async function syncClipboardTextToPc(content: string) {
-  const rawIp = await AsyncStorage.getItem(STORAGE_KEYS.lastDeviceIp);
-  if (!rawIp?.trim()) {
+  const rawConnection = await loadStoredTransferConnection();
+  if (!rawConnection?.trim()) {
     throw new Error('请先在文件传输页扫码连接电脑');
   }
 
-  const baseIp = rawIp.startsWith('http') ? rawIp : `http://${rawIp}`;
-  const response = await fetch(`${baseIp}/send_text`, {
+  const connection = parseTransferConnection(rawConnection);
+  const response = await fetch(buildTransferUrl(connection, '/send_text'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       content,
       sender_id: 'mobile-home-sync',
@@ -1324,23 +1493,15 @@ export async function pushClipboardBatchToPc(entries: LocalClipboardEntry[]) {
 
   // 3. 执行云同步
   if (isStrategyMqtt) {
-    // 异步推送，不阻塞 UI 体验
-    pushClipboardBatchToMqtt(entries, settings).catch(e => {
-      console.error('MQTT Push Failed:', e);
-    });
+    await pushClipboardBatchToMqtt(entries, settings);
   } else {
-    // WebDAV 必须同步等待以确保增量逻辑正确
     await syncEntriesToWebDavIncrementally(entries, settings);
   }
 }
 
 export async function pushClipboardBatchToMqtt(entries: LocalClipboardEntry[], settings: MobileSyncSettings) {
   const contents = entries.map(e => e.content);
-  try {
-    await publishBatchToMqtt(contents, settings);
-  } catch (error) {
-    console.error('Batch MQTT push failed:', error);
-  }
+  await publishBatchToMqtt(contents, settings);
 }
 
 export function collectTags(entries: SyncedEntry[]) {

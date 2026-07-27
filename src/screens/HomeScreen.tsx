@@ -276,7 +276,8 @@ export default function HomeScreen({ navigation }: any) {
           
           if (entries.recentEntries.length > 0) {
             const first = entries.recentEntries[0];
-            if (first.msg_type === 'text') {
+            const copyableTypes = ['text', 'code', 'url'];
+            if (copyableTypes.includes(first.content_type)) {
               await Clipboard.setStringAsync(first.content);
               Alert.alert('同步成功', `已自动复制最新内容：\n${first.content.substring(0, 50)}${first.content.length > 50 ? '...' : ''}`);
             }
@@ -401,7 +402,28 @@ export default function HomeScreen({ navigation }: any) {
       setSettings(nextSettings);
       const webDavRecord = buildWebDavDisplayRecord(
         await fetchWebDavEntries(nextSettings),
-        next  const dynamicStyles = useMemo(() => StyleSheet.create({
+        nextSettings.recentLimit
+      );
+      setPullRecord(webDavRecord);
+      setSelectedTag((current) => {
+        if (!current) return null;
+        return webDavRecord.tags.includes(current) ? current : null;
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '拉取失败';
+      Alert.alert('拉取失败', message);
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  const pullTags = pullRecord.tags;
+  const visiblePullEntries = useMemo(() => {
+    if (!selectedTag) return pullRecord.recentEntries;
+    return pullRecord.entriesByTag[selectedTag] ?? [];
+  }, [pullRecord, selectedTag]);
+
+  const dynamicStyles = useMemo(() => StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     hugeTitle: { fontSize: 36, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
     topChrome: {
@@ -568,31 +590,6 @@ export default function HomeScreen({ navigation }: any) {
       fontWeight: '600',
     },
   }), [colors, insets, isPushing]);
-     alignSelf: 'center',
-      minWidth: 96,
-      maxWidth: 160,
-      bottom: 156 + Math.max(insets.bottom, 12),
-      backgroundColor: colors.card,
-      borderRadius: 999,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.divider,
-      alignItems: 'center',
-      justifyContent: 'center',
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: 0.08,
-      shadowRadius: 12,
-      elevation: 5,
-      zIndex: 999,
-    },
-    feedbackText: {
-      color: colors.text,
-      fontSize: 13,
-      fontWeight: '600',
-    },
-  });
 
   const renderPushPage = () => (
     <>

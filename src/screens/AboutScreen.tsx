@@ -2,6 +2,7 @@ import { StyleSheet, Text, View, TouchableOpacity, Image, Linking } from 'react-
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
 import { useHaptics } from '../context/HapticContext';
+import packageJson from '../../package.json';
 
 export default function AboutScreen() {
   const { colors, isDark } = useTheme();
@@ -95,7 +96,7 @@ export default function AboutScreen() {
           resizeMode="contain"
         />
 
-        <Text style={[dynamicStyles.version, { marginTop: 4 }]}>Version 0.0.1</Text>
+        <Text style={[dynamicStyles.version, { marginTop: 4 }]}>Version {packageJson.version}</Text>
 
         <Text style={[dynamicStyles.intro, { marginTop: 14, textAlign: 'center' }]}>
           极简而不简单。{"\n"}捕捉每一份灵感，赋能每一次粘贴。

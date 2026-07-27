@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -38,9 +38,21 @@ import ImageView from "react-native-image-viewing";
 import { useTheme } from '../theme/ThemeContext';
 import { useHaptics } from '../context/HapticContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  buildTransferHeaders,
+  buildTransferUrl,
+  buildTransferWebSocketUrl,
+  clearStoredTransferConnection,
+  loadStoredTransferConnection,
+  parseTransferConnection,
+  saveStoredTransferConnection,
+  type TransferConnection,
+} from '../lib/transferConnection';
 
 const { width } = Dimensions.get('window');
 const MAX_VIDEO_DURATION_SECONDS = 15;
+const TRANSFER_CHUNK_SIZE = 512 * 1024;
+const MAX_RECONNECT_DELAY_MS = 15_000;
 
 const getTouchDistance = (touches: NativeTouchEvent['touches']) => {
   if (touches.length < 2) return null;
@@ -126,6 +138,9 @@ export default function ScannerScreen() {
   const [isCameraReady, setIsCameraReady] = useState(false);
 
   const ws = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const shouldReconnectRef = useRef(false);
   const flatListRef = useRef<FlatList>(null);
   const captureCameraRef = useRef<CameraView | null>(null);
   const isRecordingRef = useRef(false);
@@ -146,6 +161,14 @@ export default function ScannerScreen() {
   const pinchStartDistanceRef = useRef<number | null>(null);
   const pinchStartZoomRef = useRef(0);
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+  const connection = useMemo<TransferConnection | null>(() => {
+    if (!savedDeviceIp) return null;
+    try {
+      return parseTransferConnection(savedDeviceIp);
+    } catch {
+      return null;
+    }
+  }, [savedDeviceIp]);
 
   useEffect(() => {
     const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardVisible(true));
@@ -160,7 +183,11 @@ export default function ScannerScreen() {
     initDevice();
     checkPreviousConnection();
     return () => {
+      shouldReconnectRef.current = false;
       ws.current?.close();
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       if (recordingIntervalRef.current) {
         clearInterval(recordingIntervalRef.current);
       }
@@ -176,25 +203,96 @@ export default function ScannerScreen() {
 // triggerHaptic is now from useHaptics()
 
   useEffect(() => {
-    if (savedDeviceIp) {
-      setMessages([]);
-      setHasLoadedHistory(false);
-      setIsLoadingHistory(false);
-      connectWebSocket();
-    }
-  }, [savedDeviceIp]);
+    if (!connection || !deviceId) return;
+
+    let disposed = false;
+    shouldReconnectRef.current = true;
+    reconnectAttemptsRef.current = 0;
+    setMessages([]);
+    setHasLoadedHistory(false);
+    setIsLoadingHistory(false);
+
+    const connect = () => {
+      if (disposed || !shouldReconnectRef.current) return;
+
+      const socket = new WebSocket(buildTransferWebSocketUrl(connection));
+      ws.current = socket;
+
+      socket.onopen = () => {
+        reconnectAttemptsRef.current = 0;
+        socket.send(JSON.stringify({
+          type: 'identity',
+          device_id: deviceId,
+          device_name: Platform.OS === 'ios' ? 'iPhone' : 'Android Phone',
+        }));
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'devices_update') return;
+          setMessages(prev => {
+            let filtered = prev.filter(m => !(m.isOptimistic && m.content === msg.content));
+            if (
+              msg.sender_id === deviceId &&
+              MEDIA_MESSAGE_TYPES.includes(msg.msg_type) &&
+              filtered.some(m => m.isOptimistic)
+            ) {
+              const optimisticIndex = [...filtered]
+                .map((m, index) => ({ m, index }))
+                .reverse()
+                .find(({ m }) => (
+                  m.isOptimistic &&
+                  m.sender_id === msg.sender_id &&
+                  m.msg_type === msg.msg_type
+                ))?.index;
+
+              if (optimisticIndex !== undefined) {
+                filtered = filtered.filter((_, index) => index !== optimisticIndex);
+              }
+            }
+            if (filtered.find(m => m.id === msg.id)) return filtered;
+            return [...filtered, msg];
+          });
+        } catch (error) {
+          console.warn('Ignored malformed transfer message', error);
+        }
+      };
+
+      socket.onerror = () => socket.close();
+      socket.onclose = () => {
+        if (disposed || !shouldReconnectRef.current || ws.current !== socket) return;
+        const attempt = reconnectAttemptsRef.current++;
+        const delay = Math.min(MAX_RECONNECT_DELAY_MS, 750 * (2 ** Math.min(attempt, 5)));
+        reconnectTimeoutRef.current = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      shouldReconnectRef.current = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      const activeSocket = ws.current;
+      ws.current = null;
+      activeSocket?.close();
+    };
+  }, [connection, deviceId]);
 
   useEffect(() => {
-    if (!savedDeviceIp) return;
-    const baseIp = savedDeviceIp.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
+    if (!connection) return;
     const remoteImageUrls = messages
       .filter((item) => item.msg_type === 'image' && item.content.startsWith('/download') && !item.isOptimistic)
-      .map((item) => `${baseIp}${item.content}`);
+      .map((item) => buildTransferUrl(connection, item.content));
 
     remoteImageUrls.forEach((uri) => {
       Image.prefetch(uri).catch(() => {});
     });
-  }, [messages, savedDeviceIp]);
+  }, [messages, connection]);
 
   const initDevice = async () => {
     let id = await AsyncStorage.getItem('mobile_device_id');
@@ -206,11 +304,15 @@ export default function ScannerScreen() {
   };
 
   const fetchHistory = async () => {
-    if (!savedDeviceIp) return;
+    if (!connection) return;
     setIsLoadingHistory(true);
     try {
-      const baseIp = savedDeviceIp.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
-      const res = await fetch(`${baseIp}/poll?last_id=0`);
+      const res = await fetch(buildTransferUrl(connection, '/poll?last_id=0'), {
+        headers: buildTransferHeaders(connection),
+      });
+      if (!res.ok) {
+        throw new Error(`History request failed with status ${res.status}`);
+      }
       const data = await res.json();
       if (Array.isArray(data)) {
         setMessages(data);
@@ -223,80 +325,55 @@ export default function ScannerScreen() {
     }
   };
 
-  const connectWebSocket = () => {
-    if (!savedDeviceIp) return;
-    if (ws.current) ws.current.close();
-    const rawIp = savedDeviceIp.replace('http://', '').replace('https://', '');
-    const wsUrl = `ws://${rawIp}/ws`;
-    const socket = new WebSocket(wsUrl);
-    ws.current = socket;
-
-    socket.onopen = () => {
-      socket.send(JSON.stringify({
-        type: 'identity', device_id: deviceId, device_name: Platform.OS === 'ios' ? 'iPhone' : 'Android Phone'
-      }));
-    };
-
-    socket.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'devices_update') return;
-        setMessages(prev => {
-          let filtered = prev.filter(m => !(m.isOptimistic && m.content === msg.content));
-          if (
-            msg.sender_id === deviceId &&
-            MEDIA_MESSAGE_TYPES.includes(msg.msg_type) &&
-            filtered.some(m => m.isOptimistic)
-          ) {
-            const optimisticIndex = [...filtered]
-              .map((m, index) => ({ m, index }))
-              .reverse()
-              .find(({ m }) => (
-                m.isOptimistic &&
-                m.sender_id === msg.sender_id &&
-                m.msg_type === msg.msg_type
-              ))?.index;
-
-            if (optimisticIndex !== undefined) {
-              filtered = filtered.filter((_, index) => index !== optimisticIndex);
-            }
-          }
-          if (filtered.find(m => m.id === msg.id)) return filtered;
-          return [...filtered, msg];
-        });
-      } catch (err) {}
-    };
-  };
-
   const checkPreviousConnection = async () => {
     try {
       setIsConnecting(true);
-      const ip = await AsyncStorage.getItem('lastDeviceIp');
-      if (ip) setSavedDeviceIp(ip);
+      const savedValue = await loadStoredTransferConnection();
+      if (savedValue) {
+        try {
+          parseTransferConnection(savedValue);
+          setSavedDeviceIp(savedValue);
+        } catch {
+          await clearStoredTransferConnection();
+        }
+      }
     } finally {
       setIsConnecting(false);
     }
   };
 
   const handleBarcodeScanned = async ({ data }: any) => {
-    triggerHaptic('success');
-    setIsScanning(false);
-    setSavedDeviceIp(data);
-    await AsyncStorage.setItem('lastDeviceIp', data);
+    try {
+      const normalized = String(data ?? '').trim();
+      parseTransferConnection(normalized);
+      triggerHaptic('success');
+      setIsScanning(false);
+      setSavedDeviceIp(normalized);
+      await saveStoredTransferConnection(normalized);
+    } catch {
+      triggerHaptic('error');
+      Alert.alert('二维码无效', '请扫描电脑端文件传输页面生成的连接二维码。');
+    }
   };
 
   const clearConnection = async () => {
     triggerHaptic('light');
-    await AsyncStorage.removeItem('lastDeviceIp');
+    shouldReconnectRef.current = false;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    await clearStoredTransferConnection();
     setSavedDeviceIp(null);
     setMessages([]);
     setHasLoadedHistory(false);
     setIsLoadingHistory(false);
     ws.current?.close();
+    ws.current = null;
   }
 
   const sendMessage = async () => {
-    if (!inputText.trim() || !savedDeviceIp) return;
+    if (!inputText.trim() || !connection) return;
     const text = inputText.trim();
     setInputText('');
     
@@ -316,12 +393,15 @@ export default function ScannerScreen() {
     triggerHaptic();
 
     try {
-      const baseIp = savedDeviceIp.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
-      await fetch(`${baseIp}/send_text`, {
+      const response = await fetch(buildTransferUrl(connection, '/send_text'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ content: text, sender_id: deviceId, sender_name: '手机端' }),
       });
+      if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(message || `Send failed with status ${response.status}`);
+      }
     } catch (e) {
       setMessages(prev => prev.filter(m => m.id !== tempId));
       Alert.alert('发送失败', '请检查局域网连接');
@@ -575,8 +655,12 @@ export default function ScannerScreen() {
   };
 
   const performUpload = async (uri: string, name: string, mimeType: string) => {
+    if (!connection) {
+      Alert.alert('上传失败', '连接信息已失效，请重新扫描电脑端二维码。');
+      return;
+    }
     setIsUploading(true);
-    setUploadProgress(0.12);
+    setUploadProgress(0);
     
     // 乐观 UI: 立即显示文件/图片占位
     const tempId = Date.now();
@@ -595,31 +679,53 @@ export default function ScannerScreen() {
     setMessages(prev => [...prev, optimisticMsg]);
 
     try {
-      const baseIp = savedDeviceIp!.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
-      const uploadUrl = `${baseIp}/upload`;
-      const formData = new FormData();
-      formData.append('sender_id', deviceId);
-      formData.append('sender_name', '手机端');
-      formData.append('file', {
-        uri,
-        name,
-        type: mimeType,
-      } as any);
-
-      setUploadProgress(0.55);
-
-      const response = await fetch(uploadUrl, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        setUploadProgress(1);
-        triggerHaptic('success');
-      } else {
-        const errorText = await response.text().catch(() => '');
-        throw new Error(errorText || `Upload failed with status ${response.status}`);
+      const info = await LegacyFileSystem.getInfoAsync(uri);
+      if (!info.exists || typeof info.size !== 'number') {
+        throw new Error('无法读取文件大小');
       }
+
+      const totalSize = info.size;
+      const totalChunks = Math.max(1, Math.ceil(totalSize / TRANSFER_CHUNK_SIZE));
+      const uploadId = Crypto.randomUUID();
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const position = chunkIndex * TRANSFER_CHUNK_SIZE;
+        const length = Math.min(TRANSFER_CHUNK_SIZE, Math.max(0, totalSize - position));
+        const dataBase64 = length === 0
+          ? ''
+          : await LegacyFileSystem.readAsStringAsync(uri, {
+            encoding: LegacyFileSystem.EncodingType.Base64,
+            position,
+            length,
+          });
+
+        const response = await fetch(buildTransferUrl(connection, '/upload-chunk-base64'), {
+          method: 'POST',
+          headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            metadata: {
+              upload_id: uploadId,
+              chunk_index: chunkIndex,
+              total_chunks: totalChunks,
+              file_name: name,
+              sender_id: deviceId,
+              sender_name: '手机端',
+              total_size: totalSize,
+              content_type: mimeType,
+            },
+            data_base64: dataBase64,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(errorText || `Chunk ${chunkIndex + 1} failed with status ${response.status}`);
+        }
+        setUploadProgress((chunkIndex + 1) / totalChunks);
+      }
+
+      setUploadProgress(1);
+      triggerHaptic('success');
     } catch (e) {
       setMessages(prev => prev.filter(m => m.id !== tempId));
       const message = e instanceof Error ? e.message : '未知错误';
@@ -636,8 +742,11 @@ export default function ScannerScreen() {
   };
 
   const handleDownload = async (item: Message) => {
-    const baseIp = savedDeviceIp?.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
-    const fileUrl = `${baseIp}${item.content}`;
+    if (!connection) {
+      Alert.alert('下载失败', '连接信息已失效，请重新扫描电脑端二维码。');
+      return;
+    }
+    const fileUrl = buildTransferUrl(connection, item.content);
     const fileName = item.content.split('name=').pop() || 'downloaded_file';
     const decodedName = decodeURIComponent(fileName);
 
@@ -686,8 +795,9 @@ export default function ScannerScreen() {
   const renderMessageItem = ({ item }: { item: Message }) => {
     const isMe = item.direction === 'in'; 
     const isRemoteMedia = (item.msg_type === 'image' || item.msg_type === 'video') && item.content.startsWith('/download');
-    const baseIp = savedDeviceIp?.startsWith('http') ? savedDeviceIp : `http://${savedDeviceIp}`;
-    const mediaUrl = isRemoteMedia ? `${baseIp}${item.content}` : (isMe && (item.msg_type === 'image' || item.msg_type === 'video') ? item.content : null);
+    const mediaUrl = isRemoteMedia && connection
+      ? buildTransferUrl(connection, item.content)
+      : (isMe && (item.msg_type === 'image' || item.msg_type === 'video') ? item.content : null);
     const showUploadBadge = item.isOptimistic && isUploading;
     const uploadPercent = Math.max(1, Math.min(99, Math.round(uploadProgress * 100)));
 

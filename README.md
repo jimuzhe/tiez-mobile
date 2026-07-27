@@ -43,18 +43,40 @@ TieZ Mobile 是 [TieZ Clipboard Manager](https://github.com/jimuzhe/tiez-clipboa
 
 本项目集成了 EAS Build 自动化流水线。
 
-- 构建 Android 预览版 (APK):
+- 构建 Android 群测版 APK：
 
   ```bash
-  eas build --platform android --profile preview
+  npm run release:beta:android
   ```
 
-- 构建 iOS 版本:
+- 构建 iOS TestFlight 版本：
 
   ```bash
-  eas build --platform ios
+  npm run release:beta:ios
   ```
 
+- 构建 Android / iOS 正式版：
+
+  ```bash
+  npm run release:stable:android
+  npm run release:stable:ios
+  ```
+
+版本统一维护在 `versions.json`。构建脚本会按平台和渠道临时同步
+`package.json` 与 `app.json`，EAS 上传完成后自动恢复工作区；`versionCode`
+和 `buildNumber` 由 EAS Remote Version 自动递增。
+
+### 更新通道
+
+移动端通过 `https://tiez.name666.top/api/v1/latest-version` 检查更新：
+
+- `production` 构建使用 `stable` 通道。
+- `beta`、`preview`、`ipa` 和开发构建使用 `beta` 通道。
+- Android 返回对应架构或通用 APK 的下载地址。
+- iOS 正式版返回 App Store 地址，Beta 返回 TestFlight 地址。
+
+安装包仍可托管在 GitHub Release；发布完成后，在 TieZ 管理后台创建对应的
+Android/iOS 制品并发布。移动制品不填写 Tauri `.sig`。
 
 ## 开源协议
 

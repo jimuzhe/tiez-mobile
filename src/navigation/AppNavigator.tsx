@@ -34,9 +34,9 @@ export default function AppNavigator() {
     <NavigationContainer theme={navigationTheme}>
       <StatusBar style={isDark ? 'light' : 'dark'} translucent />
       <Tab.Navigator
-        sceneContainerStyle={{ backgroundColor: colors.background }}
         screenOptions={({ route }) => ({
           headerShown: false,
+          sceneStyle: { backgroundColor: colors.background },
           tabBarShowLabel: true,
           tabBarHideOnKeyboard: true,
           tabBarActiveTintColor: colors.text,

@@ -35,8 +35,7 @@ import {
 } from '../lib/sync';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
-import Constants from 'expo-constants';
-import { checkUpdate } from '../lib/updateChecker';
+import { checkUpdate, RELEASE_CHANNEL } from '../lib/updateChecker';
 import packageJson from '../../package.json';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -165,7 +164,7 @@ export default function SettingsScreen() {
     if (!syncSettings) return;
     triggerHaptic();
     await persistSyncSettings(syncSettings);
-    Alert.alert('已保存', 'WebDAV 同步配置已经更新');
+    Alert.alert('已保存', '同步配置已经更新');
   };
 
   const setRecentLimit = async (limit: RecentLimit) => {
@@ -519,6 +518,11 @@ export default function SettingsScreen() {
 
               <Text style={dynamicStyles.formLabel}>推送主题 (Topic)</Text>
               <TextInput value={syncSettings?.mqttTopic ?? ''} onChangeText={(text) => updateSyncField('mqttTopic', text)} placeholder="tiez/your-unique-topic" placeholderTextColor={colors.subText} style={dynamicStyles.input} autoCapitalize="none" autoCorrect={false} />
+              {syncSettings?.mqttProtocol === 'ws://' && (
+                <Text style={{ color: '#d97706', fontSize: 12, lineHeight: 18, marginBottom: 10 }}>
+                  当前连接未加密。功能仍可使用，但用户名、密码和剪贴板内容可能被同一网络中的设备看到，建议优先使用 WSS。
+                </Text>
+              )}
               
               <TouchableOpacity style={dynamicStyles.saveButton} activeOpacity={0.8} onPress={saveCurrentSyncSettings}>
                 <Text style={dynamicStyles.saveButtonText}>{isSavingSyncSettings ? '保存中...' : '保存 MQTT 配置'}</Text>
@@ -548,6 +552,11 @@ export default function SettingsScreen() {
               <TextInput value={syncSettings?.webdavPassword ?? ''} onChangeText={(text) => updateSyncField('webdavPassword', text)} placeholder="WebDAV Password" placeholderTextColor={colors.subText} style={dynamicStyles.input} secureTextEntry autoCapitalize="none" autoCorrect={false} />
               <Text style={dynamicStyles.formLabel}>基础路径</Text>
               <TextInput value={syncSettings?.webdavBasePath ?? ''} onChangeText={(text) => updateSyncField('webdavBasePath', text)} placeholder="tiez-sync" placeholderTextColor={colors.subText} style={[dynamicStyles.input, { marginBottom: 4 }]} autoCapitalize="none" autoCorrect={false} />
+              {/^http:\/\//i.test(syncSettings?.webdavUrl.trim() ?? '') && (
+                <Text style={{ color: '#d97706', fontSize: 12, lineHeight: 18, marginVertical: 10 }}>
+                  当前 WebDAV 使用未加密 HTTP。功能仍可使用，但账号和同步内容可能被截获，公网环境建议改为 HTTPS。
+                </Text>
+              )}
               <TouchableOpacity style={dynamicStyles.saveButton} activeOpacity={0.8} onPress={saveCurrentSyncSettings}>
                 <Text style={dynamicStyles.saveButtonText}>{isSavingSyncSettings ? '保存中...' : '保存同步配置'}</Text>
               </TouchableOpacity>
@@ -665,7 +674,9 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        <Text style={dynamicStyles.version}>TieZ v{packageJson.version}</Text>
+        <Text style={dynamicStyles.version}>
+          TieZ v{packageJson.version}{RELEASE_CHANNEL === 'beta' ? ' · Beta' : ''}
+        </Text>
         <View style={{ height: 100 }} />
       </ScrollView>
 

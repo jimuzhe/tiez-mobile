@@ -6,7 +6,7 @@
     "scheme": "tiez",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -54,38 +54,6 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "shortcuts": [
-        {
-          "id": "scanner",
-          "shortLabel": "文件传输",
-          "longLabel": "开启文件快传",
-          "icon": "./assets/icon.png",
-          "intent": {
-            "action": "android.intent.action.VIEW",
-            "data": "tiez://scanner"
-          }
-        },
-        {
-          "id": "pull",
-          "shortLabel": "获取内容",
-          "longLabel": "获取 PC 端内容",
-          "icon": "./assets/icon.png",
-          "intent": {
-            "action": "android.intent.action.VIEW",
-            "data": "tiez://sync-pull"
-          }
-        },
-        {
-          "id": "push",
-          "shortLabel": "同步内容",
-          "longLabel": "同步剪贴板到 PC",
-          "icon": "./assets/icon.png",
-          "intent": {
-            "action": "android.intent.action.VIEW",
-            "data": "tiez://sync-push"
-          }
-        }
-      ],
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -106,6 +74,7 @@
       ],
       "expo-video",
       "./plugins/withAndroidTile",
+      "./plugins/withAndroidShortcuts",
       [
         "expo-build-properties",
         {
@@ -116,7 +85,9 @@
             "enableShrinkResourcesInReleaseBuilds": true
           }
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-font"
     ],
     "extra": {
       "eas": {
