@@ -22,6 +22,7 @@ import * as Clipboard from 'expo-clipboard';
 import AboutScreen from './AboutScreen';
 import { Feather } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useTheme } from '../theme/ThemeContext';
 import { useHaptics } from '../context/HapticContext';
 import {
@@ -33,12 +34,14 @@ import {
   type MobileSyncSettings,
   type RecentLimit,
 } from '../lib/sync';
+import { applyConfigQrToSettings, parseTiezConfigQr } from '../lib/configQr';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { checkUpdate, RELEASE_CHANNEL } from '../lib/updateChecker';
 import packageJson from '../../package.json';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+type ConfigScanKind = 'mqtt' | 'webdav';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -58,6 +61,9 @@ export default function SettingsScreen() {
   const [localCacheSizeLabel, setLocalCacheSizeLabel] = useState('0 B');
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const sheetEntryAnim = useRef(new Animated.Value(0)).current;
+  const [configScanKind, setConfigScanKind] = useState<ConfigScanKind | null>(null);
+  const [isHandlingConfigScan, setIsHandlingConfigScan] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthRef = useRef(0);
@@ -165,6 +171,62 @@ export default function SettingsScreen() {
     triggerHaptic();
     await persistSyncSettings(syncSettings);
     Alert.alert('已保存', '同步配置已经更新');
+  };
+
+  const openConfigScanner = async (kind: ConfigScanKind) => {
+    triggerHaptic();
+    const permission = cameraPermission?.granted
+      ? cameraPermission
+      : await requestCameraPermission();
+    if (!permission?.granted) {
+      Alert.alert('需要相机权限', '请允许相机权限后再扫码导入配置。');
+      return;
+    }
+    setIsHandlingConfigScan(false);
+    setConfigScanKind(kind);
+  };
+
+  const closeConfigScanner = () => {
+    setConfigScanKind(null);
+    setIsHandlingConfigScan(false);
+  };
+
+  const handleConfigBarcodeScanned = async ({ data }: { data: string }) => {
+    if (!syncSettings || !configScanKind || isHandlingConfigScan) return;
+    setIsHandlingConfigScan(true);
+    try {
+      const parsed = parseTiezConfigQr(data);
+      if (parsed.kind !== configScanKind) {
+        throw new Error(
+          configScanKind === 'mqtt'
+            ? '这是 WebDAV 配置二维码，请到 WebDAV 配置里扫码'
+            : '这是 MQTT 配置二维码，请到 MQTT 配置里扫码'
+        );
+      }
+      const { next, warnings } = applyConfigQrToSettings(syncSettings, parsed);
+      await persistSyncSettings(next);
+      triggerHaptic('success');
+      closeConfigScanner();
+      if (configScanKind === 'mqtt') {
+        setIsMQTTExpanded(true);
+        setIsWebDAVExpanded(false);
+      } else {
+        setIsWebDAVExpanded(true);
+        setIsMQTTExpanded(false);
+      }
+      const warningText = warnings.length > 0 ? `\n\n注意：${warnings.join(' ')}` : '';
+      Alert.alert(
+        '导入成功',
+        `${configScanKind === 'mqtt' ? 'MQTT' : 'WebDAV'} 配置已填入并保存。${warningText}`
+      );
+    } catch (error) {
+      triggerHaptic('error');
+      setIsHandlingConfigScan(false);
+      Alert.alert(
+        '二维码无效',
+        error instanceof Error ? error.message : '请扫描电脑端对应设置里的配置二维码。'
+      );
+    }
   };
 
   const setRecentLimit = async (limit: RecentLimit) => {
@@ -458,6 +520,16 @@ export default function SettingsScreen() {
           {isMQTTExpanded && (
             <View style={[styles.row, styles.blockRow, { paddingTop: 0, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider }]}>
               <View style={{ height: 16 }} />
+              <TouchableOpacity
+                style={[dynamicStyles.saveButton, { marginBottom: 14, backgroundColor: colors.iconBackground }]}
+                activeOpacity={0.8}
+                onPress={() => void openConfigScanner('mqtt')}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Feather name="camera" size={16} color={colors.text} />
+                  <Text style={[dynamicStyles.saveButtonText, { color: colors.text }]}>扫码导入电脑 MQTT 配置</Text>
+                </View>
+              </TouchableOpacity>
               <Text style={dynamicStyles.formLabel}>服务器地址 (Host)</Text>
               <TextInput value={syncSettings?.mqttServer ?? ''} onChangeText={(text) => updateSyncField('mqttServer', text)} placeholder="broker.emqx.io" placeholderTextColor={colors.subText} style={dynamicStyles.input} autoCapitalize="none" autoCorrect={false} />
               
@@ -544,6 +616,16 @@ export default function SettingsScreen() {
           {isWebDAVExpanded && (
             <View style={[styles.row, styles.blockRow, { paddingTop: 0, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider }]}>
               <View style={{ height: 16 }} />
+              <TouchableOpacity
+                style={[dynamicStyles.saveButton, { marginBottom: 14, backgroundColor: colors.iconBackground }]}
+                activeOpacity={0.8}
+                onPress={() => void openConfigScanner('webdav')}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Feather name="camera" size={16} color={colors.text} />
+                  <Text style={[dynamicStyles.saveButtonText, { color: colors.text }]}>扫码导入电脑 WebDAV 配置</Text>
+                </View>
+              </TouchableOpacity>
               <Text style={dynamicStyles.formLabel}>服务器地址</Text>
               <TextInput value={syncSettings?.webdavUrl ?? ''} onChangeText={(text) => updateSyncField('webdavUrl', text)} placeholder="https://dav.example.com" placeholderTextColor={colors.subText} style={dynamicStyles.input} autoCapitalize="none" autoCorrect={false} />
               <Text style={dynamicStyles.formLabel}>用户名</Text>
@@ -726,6 +808,44 @@ export default function SettingsScreen() {
           </Animated.View>
         </View>
       </Modal>
+
+      <Modal
+        visible={configScanKind !== null}
+        animationType="slide"
+        onRequestClose={closeConfigScanner}
+      >
+        <View style={[styles.configScanRoot, { paddingTop: insets.top, backgroundColor: '#000' }]}>
+          <View style={styles.configScanHeader}>
+            <TouchableOpacity onPress={closeConfigScanner} style={styles.configScanCloseBtn} hitSlop={12}>
+              <Feather name="x" size={22} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.configScanTitle}>
+              {configScanKind === 'mqtt' ? '扫描 MQTT 配置' : '扫描 WebDAV 配置'}
+            </Text>
+            <View style={{ width: 40 }} />
+          </View>
+          <Text style={styles.configScanHint}>
+            对准电脑端设置页中的配置二维码
+          </Text>
+          <View style={styles.configScanCameraWrap}>
+            {configScanKind && (
+              <CameraView
+                style={StyleSheet.absoluteFill}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                onBarcodeScanned={isHandlingConfigScan ? undefined : handleConfigBarcodeScanned}
+              />
+            )}
+            <View style={styles.configScanFrame} />
+          </View>
+          {isHandlingConfigScan && (
+            <View style={styles.configScanLoading}>
+              <ActivityIndicator color="#fff" />
+              <Text style={styles.configScanLoadingText}>正在导入…</Text>
+            </View>
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -764,5 +884,54 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'flex-end',
+  },
+  configScanRoot: {
+    flex: 1,
+  },
+  configScanHeader: {
+    height: 52,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  configScanCloseBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  configScanTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '650',
+  },
+  configScanHint: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  configScanCameraWrap: {
+    marginHorizontal: 24,
+    aspectRatio: 1,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#111',
+  },
+  configScanFrame: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.35)',
+    borderRadius: 18,
+  },
+  configScanLoading: {
+    marginTop: 24,
+    alignItems: 'center',
+    gap: 10,
+  },
+  configScanLoadingText: {
+    color: '#fff',
+    fontSize: 13,
   },
 });
