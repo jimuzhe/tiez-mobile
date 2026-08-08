@@ -1449,15 +1449,24 @@ export async function syncClipboardTextToPc(content: string) {
   }
 
   const connection = parseTransferConnection(rawConnection);
-  const response = await fetch(buildTransferUrl(connection, '/send_text'), {
-    method: 'POST',
-    headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      content,
-      sender_id: 'mobile-home-sync',
-      sender_name: '手机端',
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  let response: Response;
+
+  try {
+    response = await fetch(buildTransferUrl(connection, '/send_text'), {
+      method: 'POST',
+      headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        content,
+        sender_id: 'mobile-home-sync',
+        sender_name: '手机端',
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const message = await response.text().catch(() => '');
@@ -1484,19 +1493,20 @@ export async function pushClipboardBatchToPc(entries: LocalClipboardEntry[]) {
     throw new Error('当前选择了 WebDAV 策略但尚未配置。请先在设置中填写 WebDAV 详细信息，或切换到 MQTT。');
   }
 
-  // 2. 本地局域网传输 (如果在线)
-  try {
-    for (const entry of entries) {
-      await syncClipboardTextToPc(entry.content).catch(() => {});
-    }
-  } catch (e) {}
-
-  // 3. 执行云同步
+  // MQTT is already the selected delivery path. A stale QR-code transfer
+  // address must not delay MQTT publishing after the network changes.
   if (isStrategyMqtt) {
     await pushClipboardBatchToMqtt(entries, settings);
-  } else {
-    await syncEntriesToWebDavIncrementally(entries, settings);
+    return;
   }
+
+  // Keep direct LAN transfer as a best-effort companion for WebDAV. The
+  // request itself has a short timeout so it cannot leave the UI spinning.
+  for (const entry of entries) {
+    await syncClipboardTextToPc(entry.content).catch(() => {});
+  }
+
+  await syncEntriesToWebDavIncrementally(entries, settings);
 }
 
 export async function pushClipboardBatchToMqtt(entries: LocalClipboardEntry[], settings: MobileSyncSettings) {
