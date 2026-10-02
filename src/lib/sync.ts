@@ -141,7 +141,6 @@ export const STORAGE_KEYS = {
 } as const;
 
 const LOCAL_SYNC_CACHE_KEYS = [
-  STORAGE_KEYS.webdavLocalSeq,
   STORAGE_KEYS.webdavOpCursorMap,
   STORAGE_KEYS.webdavLocalIndex,
   STORAGE_KEYS.webdavLocalItems,
@@ -247,13 +246,53 @@ export function formatCacheSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export async function getLocalSyncCacheSize() {
-  const pairs = await AsyncStorage.multiGet([...LOCAL_SYNC_CACHE_KEYS]);
+export function getWebDavSyncSpaceKey(
+  settings?: Pick<MobileSyncSettings, 'webdavUrl' | 'webdavUsername' | 'webdavBasePath'> | null
+): string {
+  if (!settings) return 'default';
+  const url = (settings.webdavUrl || '').trim().toLowerCase().replace(/\/+$/, '');
+  const username = (settings.webdavUsername || '').trim().toLowerCase();
+  const basePath = normalizeWebDavBasePath(settings.webdavBasePath || '');
+  if (!url) return 'default';
+
+  let hash = 0;
+  const raw = `${url}::${username}::${basePath}`;
+  for (let i = 0; i < raw.length; i++) {
+    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+    hash |= 0;
+  }
+  const safePrefix = url.replace(/[^a-z0-9]/gi, '_').slice(0, 24);
+  return `${safePrefix}_${(hash >>> 0).toString(36)}`;
+}
+
+function getScopedStorageKey(baseKey: string, spaceKey: string): string {
+  return `${baseKey}.${spaceKey}`;
+}
+
+export async function getLocalSyncCacheSize(settings?: MobileSyncSettings) {
+  const currentSettings = settings || await loadMobileSyncSettings().catch(() => null);
+  const spaceKey = getWebDavSyncSpaceKey(currentSettings);
+  const scopedKeys = [
+    getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey),
+  ];
+  const allKeys = Array.from(new Set([...LOCAL_SYNC_CACHE_KEYS, ...scopedKeys]));
+  const pairs = await AsyncStorage.multiGet(allKeys);
   return pairs.reduce((total, [, value]) => total + estimateStorageBytes(value), 0);
 }
 
-export async function clearLocalSyncCache() {
-  await AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS]);
+export async function clearLocalSyncCache(settings?: MobileSyncSettings) {
+  const currentSettings = settings || await loadMobileSyncSettings().catch(() => null);
+  const spaceKey = getWebDavSyncSpaceKey(currentSettings);
+  const scopedKeys = [
+    getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey),
+  ];
+  await AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS, ...scopedKeys]);
 }
 
 function truncateLogText(value: string, limit = 240) {
@@ -719,53 +758,104 @@ async function getMobileWebDavDeviceId() {
   return generated;
 }
 
-async function loadLocalWebDavSeq() {
-  const raw = await AsyncStorage.getItem(STORAGE_KEYS.webdavLocalSeq);
-  return raw ? Number(raw) || 0 : 0;
+async function loadLocalWebDavSeq(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalSeq, spaceKey);
+  const raw = await AsyncStorage.getItem(scopedKey);
+  if (raw !== null) {
+    return Number(raw) || 0;
+  }
+  if (spaceKey === 'default') {
+    const legacy = await AsyncStorage.getItem(STORAGE_KEYS.webdavLocalSeq);
+    return legacy ? Number(legacy) || 0 : 0;
+  }
+  return 0;
 }
 
-async function saveLocalWebDavSeq(seq: number) {
-  await AsyncStorage.setItem(STORAGE_KEYS.webdavLocalSeq, String(seq));
+async function saveLocalWebDavSeq(seq: number, settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalSeq, spaceKey);
+  await AsyncStorage.setItem(scopedKey, String(seq));
 }
 
-async function loadWebDavOpCursorMap() {
-  return loadJsonStorage<Record<string, number>>(STORAGE_KEYS.webdavOpCursorMap, {});
+async function loadWebDavOpCursorMap(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey);
+  const raw = await AsyncStorage.getItem(scopedKey);
+  if (raw) {
+    try {
+      return JSON.parse(raw) as Record<string, number>;
+    } catch {}
+  }
+  if (spaceKey === 'default') {
+    return loadJsonStorage<Record<string, number>>(STORAGE_KEYS.webdavOpCursorMap, {});
+  }
+  return {};
 }
 
-async function saveWebDavOpCursorMap(map: Record<string, number>) {
-  await saveJsonStorage(STORAGE_KEYS.webdavOpCursorMap, map);
+async function saveWebDavOpCursorMap(map: Record<string, number>, settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey);
+  await saveJsonStorage(scopedKey, map);
 }
 
-async function loadWebDavLocalIndex() {
-  return loadJsonStorage<Record<string, string>>(STORAGE_KEYS.webdavLocalIndex, {});
+async function loadWebDavLocalIndex(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey);
+  const raw = await AsyncStorage.getItem(scopedKey);
+  if (raw) {
+    try {
+      return JSON.parse(raw) as Record<string, string>;
+    } catch {}
+  }
+  if (spaceKey === 'default') {
+    return loadJsonStorage<Record<string, string>>(STORAGE_KEYS.webdavLocalIndex, {});
+  }
+  return {};
 }
 
-async function saveWebDavLocalIndex(index: Record<string, string>) {
-  await saveJsonStorage(STORAGE_KEYS.webdavLocalIndex, index);
+async function saveWebDavLocalIndex(index: Record<string, string>, settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey);
+  await saveJsonStorage(scopedKey, index);
 }
 
-async function loadWebDavLocalItems() {
-  const rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavLocalItems, []);
-  return rawItems.map((item) => normalizeCloudItem(item)).slice(0, MAX_LOCAL_SYNC_ITEMS);
+async function loadWebDavLocalItems(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey);
+  let rawItems = await loadJsonStorage<CloudSyncItem[] | null>(scopedKey, null);
+  if (!rawItems && spaceKey === 'default') {
+    rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavLocalItems, []);
+  }
+  return (rawItems || []).map((item) => normalizeCloudItem(item)).slice(0, MAX_LOCAL_SYNC_ITEMS);
 }
 
-async function saveWebDavLocalItems(items: CloudSyncItem[]) {
+async function saveWebDavLocalItems(items: CloudSyncItem[], settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey);
   await saveJsonStorage(
-    STORAGE_KEYS.webdavLocalItems,
+    scopedKey,
     sortCloudItemsDesc(items)
       .slice(0, MAX_LOCAL_SYNC_ITEMS)
       .map((item) => compactCloudItemForCache(item))
   );
 }
 
-async function loadWebDavPulledItems() {
-  const rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavPulledItems, []);
-  return rawItems.map((item) => normalizeCloudItem(item)).slice(0, MAX_REMOTE_SYNC_ITEMS);
+async function loadWebDavPulledItems(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey);
+  let rawItems = await loadJsonStorage<CloudSyncItem[] | null>(scopedKey, null);
+  if (!rawItems && spaceKey === 'default') {
+    rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavPulledItems, []);
+  }
+  return (rawItems || []).map((item) => normalizeCloudItem(item)).slice(0, MAX_REMOTE_SYNC_ITEMS);
 }
 
-async function saveWebDavPulledItems(items: CloudSyncItem[]) {
+async function saveWebDavPulledItems(items: CloudSyncItem[], settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey);
   await saveJsonStorage(
-    STORAGE_KEYS.webdavPulledItems,
+    scopedKey,
     sortCloudItemsDesc(items)
       .slice(0, MAX_REMOTE_SYNC_ITEMS)
       .map((item) => compactCloudItemForCache(item))
@@ -1159,9 +1249,9 @@ function localEntryToCloudItem(entry: LocalClipboardEntry): CloudSyncItem {
   });
 }
 
-async function collectLocalIncrementalItems(localItems: CloudSyncItem[]) {
+async function collectLocalIncrementalItems(localItems: CloudSyncItem[], settings?: MobileSyncSettings) {
   const collapsed = collapseItemsBySyncKey(localItems);
-  const previousIndex = await loadWebDavLocalIndex();
+  const previousIndex = await loadWebDavLocalIndex(settings);
   const nextIndex: Record<string, string> = {};
   const deltas: CloudSyncItem[] = [];
 
@@ -1186,20 +1276,25 @@ async function syncEntriesToWebDavIncrementally(
   const deviceId = await getMobileWebDavDeviceId();
   const paths = await ensureWebDavDirectories(settings);
   const syncHead = await resolveWebDavSyncHead(settings, paths);
-  const existingLocalItems = await loadWebDavLocalItems();
+  const existingLocalItems = await loadWebDavLocalItems(settings);
   const incomingLocalItems = entries.map((entry) => localEntryToCloudItem(entry));
   const nextLocalItems = mergeCloudItems(existingLocalItems, incomingLocalItems, MAX_LOCAL_SYNC_ITEMS);
-  const { deltas, nextIndex, collapsedItems } = await collectLocalIncrementalItems(nextLocalItems);
+  const { deltas, nextIndex, collapsedItems } = await collectLocalIncrementalItems(nextLocalItems, settings);
 
-  let nextSeq = await loadLocalWebDavSeq();
+  // The remote head is authoritative: a fresh or migrated local counter must never
+  // reuse a sequence number and overwrite this device's existing ops files.
+  let nextSeq = Math.max(
+    await loadLocalWebDavSeq(settings),
+    syncHead.devices[deviceId]?.latest_op_seq ?? 0
+  );
   if (deltas.length > 0) {
     nextSeq += 1;
     await uploadWebDavOpsBatch(settings, paths.opsPath, deviceId, nextSeq, deltas);
-    await saveLocalWebDavSeq(nextSeq);
+    await saveLocalWebDavSeq(nextSeq, settings);
   }
 
-  await saveWebDavLocalItems(nextLocalItems);
-  await saveWebDavLocalIndex(nextIndex);
+  await saveWebDavLocalItems(nextLocalItems, settings);
+  await saveWebDavLocalIndex(nextIndex, settings);
   await uploadWebDavSnapshot(settings, paths.devicesPath, deviceId, nextSeq, collapsedItems);
 
   updateWebDavHeadDevice(syncHead, deviceId, (device) => {
@@ -1217,8 +1312,8 @@ async function pullRemoteWebDavOpsFromHead(
   head: WebDavSyncHead
 ) {
   const localDeviceId = await getMobileWebDavDeviceId();
-  const cursorMap = await loadWebDavOpCursorMap();
-  const existingRemoteItems = await loadWebDavPulledItems();
+  const cursorMap = await loadWebDavOpCursorMap(settings);
+  const existingRemoteItems = await loadWebDavPulledItems(settings);
   let nextRemoteItems = existingRemoteItems;
   let headStale = false;
 
@@ -1255,8 +1350,8 @@ async function pullRemoteWebDavOpsFromHead(
     }
   }
 
-  await saveWebDavOpCursorMap(cursorMap);
-  await saveWebDavPulledItems(nextRemoteItems);
+  await saveWebDavOpCursorMap(cursorMap, settings);
+  await saveWebDavPulledItems(nextRemoteItems, settings);
   return { headStale, items: nextRemoteItems };
 }
 
@@ -1266,7 +1361,7 @@ async function pullRemoteWebDavSnapshotsFromHead(
   head: WebDavSyncHead
 ) {
   const localDeviceId = await getMobileWebDavDeviceId();
-  let nextRemoteItems = await loadWebDavPulledItems();
+  let nextRemoteItems = await loadWebDavPulledItems(settings);
 
   const remoteDeviceIds = Object.entries(head.devices)
     .filter(([deviceId, deviceHead]) => deviceId !== localDeviceId && deviceHead.snapshot_updated_at > 0)
@@ -1279,7 +1374,7 @@ async function pullRemoteWebDavSnapshotsFromHead(
     nextRemoteItems = mergeCloudItems(nextRemoteItems, snapshot.entries, MAX_REMOTE_SYNC_ITEMS);
   }
 
-  await saveWebDavPulledItems(nextRemoteItems);
+  await saveWebDavPulledItems(nextRemoteItems, settings);
   return nextRemoteItems;
 }
 
@@ -1411,7 +1506,7 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
   }
 
   const paths = await ensureWebDavDirectories(settings);
-  const cachedItems = await loadWebDavPulledItems();
+  const cachedItems = await loadWebDavPulledItems(settings);
 
   try {
     let syncHead = await resolveWebDavSyncHead(settings, paths);

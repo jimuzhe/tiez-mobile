@@ -904,7 +904,7 @@ const styles = StyleSheet.create({
   configScanTitle: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '650',
+    fontWeight: '600',
   },
   configScanHint: {
     color: 'rgba(255,255,255,0.72)',
