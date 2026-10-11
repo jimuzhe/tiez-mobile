@@ -2,9 +2,10 @@
 // QR code everything goes through the sealed routes
 // (docs/LAN-TRANSFER-ENCRYPTION.md); desktops without encryption get the old
 // plaintext requests.
+import { File } from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { base64Decode, base64Encode } from './e2eCore';
-import { buildUploadPayload, openDownloadFrames, openLan, sealedDownloadPath, sealLan } from './lanSeal';
+import { base64Decode } from './e2eCore';
+import { buildUploadPayload, openDownloadStream, openLan, sealedDownloadPath, sealLan } from './lanSeal';
 import { buildTransferHeaders, buildTransferUrl, type TransferConnection } from './transferConnection';
 
 const encodeJson = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
@@ -78,16 +79,44 @@ export async function downloadTransferFile(connection: TransferConnection, url: 
     const result = await LegacyFileSystem.downloadAsync(buildTransferUrl(connection, url), targetUri);
     return result.uri;
   }
-  const res = await fetch(buildTransferUrl(connection, sealedDownloadPath(url)), {
-    headers: buildTransferHeaders(connection),
-  });
-  if (!res.ok) throw new Error(`Download failed with status ${res.status}`);
-  const plain = openDownloadFrames(connection.lanKey, new Uint8Array(await res.arrayBuffer()));
-  if (!plain) throw new Error('Unreadable download');
-  await LegacyFileSystem.writeAsStringAsync(targetUri, base64Encode(plain), {
-    encoding: LegacyFileSystem.EncodingType.Base64,
-  });
-  return targetUri;
+  // The sealed stream goes to disk natively, then opens a frame at a time,
+  // so memory holds one frame whatever the file's size. Both scratch files
+  // get plain ASCII names; only the final move sees the real file name.
+  const scratch = `${LegacyFileSystem.cacheDirectory ?? ''}tiez-lan-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const sealedUri = `${scratch}.sealed`;
+  const plainUri = `${scratch}.part`;
+  try {
+    const result = await LegacyFileSystem.downloadAsync(
+      buildTransferUrl(connection, sealedDownloadPath(url)),
+      sealedUri,
+      { headers: buildTransferHeaders(connection) },
+    );
+    if (result.status !== 200) throw new Error(`Download failed with status ${result.status}`);
+    const sealed = new File(sealedUri);
+    const plain = new File(plainUri);
+    plain.create({ overwrite: true });
+    const input = sealed.open();
+    const output = plain.open();
+    let opened = false;
+    try {
+      opened = await openDownloadStream(
+        connection.lanKey,
+        sealed.size,
+        (length) => input.readBytes(length),
+        (bytes) => output.writeBytes(bytes),
+      );
+    } finally {
+      input.close();
+      output.close();
+    }
+    if (!opened) throw new Error('Unreadable download');
+    await LegacyFileSystem.deleteAsync(targetUri, { idempotent: true });
+    await LegacyFileSystem.moveAsync({ from: plainUri, to: targetUri });
+    return targetUri;
+  } finally {
+    await LegacyFileSystem.deleteAsync(sealedUri, { idempotent: true });
+    await LegacyFileSystem.deleteAsync(plainUri, { idempotent: true });
+  }
 }
 
 const mediaCache = new Map<string, Promise<string>>();

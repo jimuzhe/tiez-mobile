@@ -63,37 +63,43 @@ export function buildUploadPayload(metadata: unknown, chunk: Uint8Array) {
   return out;
 }
 
+/** Frames carry up to 256 KiB of the file. */
+const MAX_FRAME = 256 * 1024 + OVERHEAD;
+
 /**
- * A sealed download (`u32 BE length || box` frames) back to the file's bytes.
- * Frame i opens only as `download/<i>/<last>`, and the last frame is the one
- * nothing follows, so dropped, reordered or cut-off frames all fail.
+ * A sealed download (`u32 BE length || box` frames, `size` bytes in all) back
+ * to the file's bytes, one frame at a time: `read(n)` returns the next n bytes
+ * and `write` gets each frame's plaintext as soon as it opens. Frame i opens
+ * only as `download/<i>/<last>`, and the last frame is the one nothing
+ * follows, so dropped, reordered or cut-off frames all fail. False on any bad
+ * frame; what was written before it must then be thrown away.
  */
-export function openDownloadFrames(key: Uint8Array, stream: Uint8Array): Uint8Array | null {
-  const parts: Uint8Array[] = [];
+export async function openDownloadStream(
+  key: Uint8Array,
+  size: number,
+  read: (length: number) => Uint8Array,
+  write: (plain: Uint8Array) => void,
+): Promise<boolean> {
   let offset = 0;
   let index = 0;
-  let total = 0;
-  while (offset < stream.length) {
-    if (stream.length - offset < 4) return null;
-    const len = new DataView(stream.buffer, stream.byteOffset + offset, 4).getUint32(0);
+  do {
+    if (size - offset < 4) return false;
+    const head = read(4);
+    if (head.length !== 4) return false;
+    const len = new DataView(head.buffer, head.byteOffset, 4).getUint32(0);
     const end = offset + 4 + len;
-    if (end > stream.length) return null;
-    const last = end === stream.length;
-    const plain = openLan(key, `download/${index}/${last ? 1 : 0}`, stream.subarray(offset + 4, end));
-    if (!plain) return null;
-    parts.push(plain);
-    total += plain.length;
+    if (len > MAX_FRAME || end > size) return false;
+    const box = read(len);
+    if (box.length !== len) return false;
+    const plain = openLan(key, `download/${index}/${end === size ? 1 : 0}`, box);
+    if (!plain) return false;
+    write(plain);
     offset = end;
     index++;
-  }
-  if (index === 0) return null;
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  return out;
+    // Decrypting is synchronous; let the UI run between batches of frames.
+    if (index % 8 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+  } while (offset < size);
+  return true;
 }
 
 /** Message links point at /download/<token>?name=; the sealed stream lives at /s/download/<token>. */
