@@ -1,11 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import {
-  buildTransferHeaders,
-  buildTransferUrl,
   loadStoredTransferConnection,
   parseTransferConnection,
 } from './transferConnection';
+import { sendTransferText } from './transferApi';
 
 export type RecentLimit = number;
 export type PushStrategy = 'mqtt' | 'webdav';
@@ -1606,14 +1605,10 @@ export async function syncClipboardTextToPc(content: string) {
   }
 
   const connection = parseTransferConnection(rawConnection);
-  const response = await fetch(buildTransferUrl(connection, '/send_text'), {
-    method: 'POST',
-    headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      content,
-      sender_id: 'mobile-home-sync',
-      sender_name: '手机端',
-    }),
+  const response = await sendTransferText(connection, {
+    content,
+    sender_id: 'mobile-home-sync',
+    sender_name: '手机端',
   });
 
   if (!response.ok) {

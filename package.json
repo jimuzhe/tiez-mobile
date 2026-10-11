@@ -8,7 +8,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "validate:versions": "node scripts/validate-versions.mjs",
-    "test:e2e": "node --experimental-strip-types scripts/e2e-vectors.test.mts",
+    "test:e2e": "node --experimental-strip-types scripts/e2e-vectors.test.mts && node --experimental-strip-types scripts/lan-vectors.test.mts",
     "release:stable:android": "node scripts/build-release.mjs android stable",
     "release:stable:ios": "node scripts/build-release.mjs ios stable",
     "release:beta:android": "node scripts/build-release.mjs android beta",

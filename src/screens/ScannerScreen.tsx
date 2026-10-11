@@ -39,7 +39,6 @@ import { useTheme } from '../theme/ThemeContext';
 import { useHaptics } from '../context/HapticContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  buildTransferHeaders,
   buildTransferUrl,
   buildTransferWebSocketUrl,
   clearStoredTransferConnection,
@@ -48,6 +47,15 @@ import {
   saveStoredTransferConnection,
   type TransferConnection,
 } from '../lib/transferConnection';
+import {
+  decodeSocketMessage,
+  downloadTransferFile,
+  encodeSocketMessage,
+  fetchTransferMessages,
+  resolveTransferMedia,
+  sendTransferText,
+  uploadTransferChunk,
+} from '../lib/transferApi';
 
 const { width } = Dimensions.get('window');
 const MAX_VIDEO_DURATION_SECONDS = 15;
@@ -91,6 +99,9 @@ export default function ScannerScreen() {
   const [isConnecting, setIsConnecting] = useState(true);
   
   const [messages, setMessages] = useState<Message[]>([]);
+  // Encrypted connections: decrypted cache files for pictures and videos,
+  // keyed by the message's /download/ link.
+  const [resolvedMedia, setResolvedMedia] = useState<Record<string, string>>({});
   const [inputText, setInputText] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0); // 0-1
@@ -216,11 +227,12 @@ export default function ScannerScreen() {
       if (disposed || !shouldReconnectRef.current) return;
 
       const socket = new WebSocket(buildTransferWebSocketUrl(connection));
+      if (connection.lanKey) socket.binaryType = 'arraybuffer';
       ws.current = socket;
 
       socket.onopen = () => {
         reconnectAttemptsRef.current = 0;
-        socket.send(JSON.stringify({
+        socket.send(encodeSocketMessage(connection, {
           type: 'identity',
           device_id: deviceId,
           device_name: Platform.OS === 'ios' ? 'iPhone' : 'Android Phone',
@@ -229,7 +241,7 @@ export default function ScannerScreen() {
 
       socket.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data);
+          const msg = decodeSocketMessage(connection, event.data);
           if (msg.type === 'devices_update') return;
           setMessages(prev => {
             let filtered = prev.filter(m => !(m.isOptimistic && m.content === msg.content));
@@ -285,13 +297,26 @@ export default function ScannerScreen() {
 
   useEffect(() => {
     if (!connection) return;
-    const remoteImageUrls = messages
-      .filter((item) => item.msg_type === 'image' && item.content.startsWith('/download') && !item.isOptimistic)
-      .map((item) => buildTransferUrl(connection, item.content));
-
-    remoteImageUrls.forEach((uri) => {
-      Image.prefetch(uri).catch(() => {});
+    const remoteMedia = messages.filter((item) => (
+      (item.msg_type === 'image' || (connection.lanKey && item.msg_type === 'video'))
+      && item.content.startsWith('/download') && !item.isOptimistic
+    ));
+    if (!connection.lanKey) {
+      remoteMedia.forEach((item) => {
+        Image.prefetch(buildTransferUrl(connection, item.content)).catch(() => {});
+      });
+      return;
+    }
+    // Sealed downloads: decrypt to cache files before showing them.
+    let cancelled = false;
+    remoteMedia.forEach((item) => {
+      resolveTransferMedia(connection, item.content)
+        .then((uri) => {
+          if (!cancelled) setResolvedMedia((prev) => (prev[item.content] ? prev : { ...prev, [item.content]: uri }));
+        })
+        .catch(() => {});
     });
+    return () => { cancelled = true; };
   }, [messages, connection]);
 
   const initDevice = async () => {
@@ -307,13 +332,7 @@ export default function ScannerScreen() {
     if (!connection) return;
     setIsLoadingHistory(true);
     try {
-      const res = await fetch(buildTransferUrl(connection, '/poll?last_id=0'), {
-        headers: buildTransferHeaders(connection),
-      });
-      if (!res.ok) {
-        throw new Error(`History request failed with status ${res.status}`);
-      }
-      const data = await res.json();
+      const data = await fetchTransferMessages(connection, 0);
       if (Array.isArray(data)) {
         setMessages(data);
       }
@@ -393,11 +412,7 @@ export default function ScannerScreen() {
     triggerHaptic();
 
     try {
-      const response = await fetch(buildTransferUrl(connection, '/send_text'), {
-        method: 'POST',
-        headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ content: text, sender_id: deviceId, sender_name: '手机端' }),
-      });
+      const response = await sendTransferText(connection, { content: text, sender_id: deviceId, sender_name: '手机端' });
       if (!response.ok) {
         const message = await response.text().catch(() => '');
         throw new Error(message || `Send failed with status ${response.status}`);
@@ -699,23 +714,16 @@ export default function ScannerScreen() {
             length,
           });
 
-        const response = await fetch(buildTransferUrl(connection, '/upload-chunk-base64'), {
-          method: 'POST',
-          headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            metadata: {
-              upload_id: uploadId,
-              chunk_index: chunkIndex,
-              total_chunks: totalChunks,
-              file_name: name,
-              sender_id: deviceId,
-              sender_name: '手机端',
-              total_size: totalSize,
-              content_type: mimeType,
-            },
-            data_base64: dataBase64,
-          }),
-        });
+        const response = await uploadTransferChunk(connection, {
+          upload_id: uploadId,
+          chunk_index: chunkIndex,
+          total_chunks: totalChunks,
+          file_name: name,
+          sender_id: deviceId,
+          sender_name: '手机端',
+          total_size: totalSize,
+          content_type: mimeType,
+        }, dataBase64);
 
         if (!response.ok) {
           const errorText = await response.text().catch(() => '');
@@ -746,16 +754,18 @@ export default function ScannerScreen() {
       Alert.alert('下载失败', '连接信息已失效，请重新扫描电脑端二维码。');
       return;
     }
-    const fileUrl = buildTransferUrl(connection, item.content);
     const fileName = item.content.split('name=').pop() || 'downloaded_file';
     const decodedName = decodeURIComponent(fileName);
 
     try {
       triggerHaptic('medium');
-      const downloadRes = await LegacyFileSystem.downloadAsync(
-        fileUrl,
-        `${LegacyFileSystem.documentDirectory ?? ''}${decodedName}`
-      );
+      const downloadRes = {
+        uri: await downloadTransferFile(
+          connection,
+          item.content,
+          `${LegacyFileSystem.documentDirectory ?? ''}${decodedName}`
+        ),
+      };
 
       if (item.msg_type === 'image') {
         const { status } = await MediaLibrary.requestPermissionsAsync();
@@ -796,7 +806,7 @@ export default function ScannerScreen() {
     const isMe = item.direction === 'in'; 
     const isRemoteMedia = (item.msg_type === 'image' || item.msg_type === 'video') && item.content.startsWith('/download');
     const mediaUrl = isRemoteMedia && connection
-      ? buildTransferUrl(connection, item.content)
+      ? (connection.lanKey ? resolvedMedia[item.content] ?? null : buildTransferUrl(connection, item.content))
       : (isMe && (item.msg_type === 'image' || item.msg_type === 'video') ? item.content : null);
     const showUploadBadge = item.isOptimistic && isUploading;
     const uploadPercent = Math.max(1, Math.min(99, Math.round(uploadProgress * 100)));
