@@ -367,6 +367,8 @@ export default function HomeScreen({ navigation }: any) {
     return entries;
   }, [currentClipboardEntry, manualInputs]);
 
+  const selectedPushCount = pushEntries.filter((entry) => selectedPushIds.includes(entry.id)).length;
+
   const toggleSelectAllPushEntries = useCallback(() => {
     triggerHaptic('selection');
     setSelectedPushIds((current) =>
@@ -437,28 +439,38 @@ export default function HomeScreen({ navigation }: any) {
     container: { flex: 1, backgroundColor: colors.background },
     hugeTitle: { fontSize: 36, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
     topChrome: {
-      paddingTop: insets.top,
+      // Level with the settings page title.
+      paddingTop: 80,
       paddingHorizontal: 20,
       paddingBottom: 2,
       backgroundColor: colors.background,
     },
+    // Same control as on the settings page, full width.
     segmentedControl: {
       flexDirection: 'row',
       backgroundColor: colors.iconBackground,
-      borderRadius: 16,
-      padding: 4,
-      marginBottom: 8,
+      borderRadius: 10,
+      padding: 2,
+      marginTop: 12,
+      marginBottom: 12,
     },
     segmentBtn: {
       flex: 1,
-      paddingVertical: 12,
-      borderRadius: 12,
+      paddingVertical: 7,
+      borderRadius: 8,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    segmentBtnActive: { backgroundColor: colors.primary },
-    segmentBtnText: { color: colors.subText, fontSize: 15, fontWeight: '600' },
-    segmentBtnTextActive: { color: colors.primaryText },
+    segmentBtnActive: {
+      backgroundColor: colors.card,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.1,
+      shadowRadius: 2,
+      elevation: 2,
+    },
+    segmentBtnText: { color: colors.subText, fontSize: 14, fontWeight: '500' },
+    segmentBtnTextActive: { color: colors.text, fontWeight: '600' },
     sectionTitle: {
       fontSize: 16,
       fontWeight: '600',
@@ -473,21 +485,12 @@ export default function HomeScreen({ navigation }: any) {
       alignItems: 'center',
       justifyContent: 'center',
       flexDirection: 'row',
-      opacity: isPushing ? 0.75 : 1,
+      opacity: isPushing ? 0.75 : selectedPushCount === 0 ? 0.35 : 1,
     },
     primaryActionText: { color: colors.primaryText, fontSize: 16, fontWeight: '700', marginLeft: 8 },
-    secondaryAction: {
-      backgroundColor: colors.card,
-      borderRadius: 16,
-      paddingVertical: 15,
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexDirection: 'row',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.divider,
-    },
-    secondaryActionText: { color: colors.text, fontSize: 15, fontWeight: '600', marginLeft: 8 },
-    rowActions: { flexDirection: 'row', gap: 12, marginBottom: 26 },
+    selectAllAction: { justifyContent: 'center', paddingHorizontal: 8 },
+    selectAllText: { color: colors.text, fontSize: 15, fontWeight: '500' },
+    rowActions: { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 26 },
     card: {
       backgroundColor: colors.card,
       borderRadius: 18,
@@ -555,13 +558,6 @@ export default function HomeScreen({ navigation }: any) {
     tagText: { color: colors.subText, fontSize: 15, fontWeight: '500' },
     tagTextActive: { color: colors.tagTextActive, fontWeight: '600' },
     emptyText: { color: colors.subText, fontSize: 14, lineHeight: 22, textAlign: 'center' },
-    bottomHint: {
-      color: colors.subText,
-      fontSize: 13,
-      lineHeight: 20,
-      textAlign: 'center',
-      marginBottom: 12,
-    },
     pushBottomActionsWrap: {
       position: 'absolute',
       left: 20,
@@ -599,32 +595,39 @@ export default function HomeScreen({ navigation }: any) {
       fontSize: 13,
       fontWeight: '600',
     },
-  }), [colors, insets, isPushing]);
+  }), [colors, insets, isPushing, selectedPushCount]);
 
   const renderPushPage = () => (
     <>
-      <TouchableOpacity
-        style={[
-          dynamicStyles.card,
-          selectedPushIds.includes('current-clipboard') && dynamicStyles.selectedCard,
-        ]}
-        activeOpacity={currentClipboardEntry ? 0.75 : 1}
-        onPress={() => currentClipboardEntry && togglePushSelection('current-clipboard')}
-      >
-        <View style={styles.cardContent}>
-          <Text style={dynamicStyles.cardTitle} numberOfLines={4}>
-            {currentClipboardEntry?.content || '当前手机剪贴板还是空的，下拉后再试一次。'}
-          </Text>
-          <Text style={dynamicStyles.cardMeta}>第一条 · 当前剪贴板</Text>
+      {currentClipboardEntry ? (
+        <TouchableOpacity
+          style={[
+            dynamicStyles.card,
+            selectedPushIds.includes('current-clipboard') && dynamicStyles.selectedCard,
+          ]}
+          activeOpacity={0.75}
+          onPress={() => togglePushSelection('current-clipboard')}
+        >
+          <View style={styles.cardContent}>
+            <Text style={dynamicStyles.cardTitle} numberOfLines={4}>
+              {currentClipboardEntry.content}
+            </Text>
+            <Text style={dynamicStyles.cardMeta}>当前剪贴板 · 下拉刷新</Text>
+          </View>
+          <View style={dynamicStyles.cardSelectionIndicator}>
+             <Feather
+              name={selectedPushIds.includes('current-clipboard') ? 'check-circle' : 'circle'}
+              size={18}
+              color={selectedPushIds.includes('current-clipboard') ? colors.primary : colors.divider}
+            />
+          </View>
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.emptyClipboard}>
+          <Feather name="clipboard" size={22} color={colors.subText} />
+          <Text style={dynamicStyles.emptyText}>手机剪贴板是空的，复制内容后下拉刷新</Text>
         </View>
-        <View style={dynamicStyles.cardSelectionIndicator}>
-           <Feather
-            name={selectedPushIds.includes('current-clipboard') ? 'check-circle' : 'circle'}
-            size={18}
-            color={selectedPushIds.includes('current-clipboard') ? colors.primary : colors.divider}
-          />
-        </View>
-      </TouchableOpacity>
+      )}
 
       {manualInputs.map((input, index) => {
         const isLast = index === manualInputs.length - 1;
@@ -661,7 +664,7 @@ export default function HomeScreen({ navigation }: any) {
                   setSelectedPushIds((current) => current.filter(item => item !== input.id));
                 }
               }}
-              placeholder={index === 0 ? "在此输入内容，即刻推送至 PC..." : "继续输入下一条..."}
+              placeholder={index === 0 ? "输入要推送到电脑的内容" : "继续输入下一条"}
               placeholderTextColor={colors.subText}
               style={[dynamicStyles.manualInput, { marginBottom: 0, backgroundColor: 'transparent', minHeight: 60, paddingRight: 32 }]}
               multiline
@@ -857,7 +860,7 @@ export default function HomeScreen({ navigation }: any) {
 
       <View style={dynamicStyles.topChrome}>
         <View style={styles.header}>
-          <Text style={dynamicStyles.hugeTitle}>TieZ</Text>
+          <Text style={dynamicStyles.hugeTitle}>同步</Text>
         </View>
 
         <View style={dynamicStyles.segmentedControl}>
@@ -909,25 +912,28 @@ export default function HomeScreen({ navigation }: any) {
 
       {mode === 'push' && !isLoading ? (
         <View style={[dynamicStyles.pushBottomActionsWrap, isKeyboardVisible && { bottom: 20 }]}>
-          <Text style={dynamicStyles.bottomHint}>下拉会重新读取当前手机剪贴板。</Text>
           <View style={dynamicStyles.rowActions}>
-            <TouchableOpacity style={[dynamicStyles.secondaryAction, styles.flexAction]} onPress={toggleSelectAllPushEntries}>
-              <Feather name="check-square" size={18} color={colors.text} />
-              <Text style={dynamicStyles.secondaryActionText}>
-                {selectedPushIds.length === pushEntries.length && pushEntries.length > 0 ? '取消全选' : '全选'}
-              </Text>
-            </TouchableOpacity>
+            {/* Select all is a side action, and only means something with two or more. */}
+            {pushEntries.length > 1 ? (
+              <TouchableOpacity style={dynamicStyles.selectAllAction} onPress={toggleSelectAllPushEntries}>
+                <Text style={dynamicStyles.selectAllText}>
+                  {selectedPushCount === pushEntries.length ? '取消全选' : '全选'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               style={[dynamicStyles.primaryAction, styles.flexAction]}
               onPress={pushSelectedEntries}
-              disabled={isPushing}
+              disabled={isPushing || selectedPushCount === 0}
             >
               {isPushing ? (
                 <ActivityIndicator size="small" color={colors.primaryText} />
               ) : (
                 <Feather name="upload-cloud" size={18} color={colors.primaryText} />
               )}
-              <Text style={dynamicStyles.primaryActionText}>推送选中项</Text>
+              <Text style={dynamicStyles.primaryActionText}>
+                {selectedPushCount > 0 ? `推送 ${selectedPushCount} 条到电脑` : '推送到电脑'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -947,4 +953,5 @@ const styles = StyleSheet.create({
   cardRow: { flexDirection: 'row', alignItems: 'flex-start' },
   cardContent: { flex: 1, marginLeft: 14 },
   pushBottomSpacer: { height: 20 },
+  emptyClipboard: { alignItems: 'center', gap: 10, paddingVertical: 28 },
 });
