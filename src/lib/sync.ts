@@ -1601,7 +1601,7 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
 export async function syncClipboardTextToPc(content: string) {
   const rawConnection = await loadStoredTransferConnection();
   if (!rawConnection?.trim()) {
-    throw new Error('请先在文件传输页扫码连接电脑');
+    throw new Error('请先在「互传」页扫码连接电脑');
   }
 
   const connection = parseTransferConnection(rawConnection);

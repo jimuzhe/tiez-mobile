@@ -76,7 +76,7 @@ export default function AppNavigator() {
         }}
       >
         <Tab.Screen name="Home" component={HomeScreen} options={{ title: '同步' }} />
-        <Tab.Screen name="Scanner" component={ScannerScreen} options={{ title: '文件传输' }} />
+        <Tab.Screen name="Scanner" component={ScannerScreen} options={{ title: '互传' }} />
         <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: '设置' }} />
       </Tab.Navigator>
     </NavigationContainer>

@@ -371,7 +371,7 @@ export default function ScannerScreen() {
       await saveStoredTransferConnection(normalized);
     } catch {
       triggerHaptic('error');
-      Alert.alert('二维码无效', '请扫描电脑端文件传输页面生成的连接二维码。');
+      Alert.alert('二维码无效', '请扫描电脑上「局域网互传」的二维码。');
     }
   };
 
@@ -904,7 +904,7 @@ export default function ScannerScreen() {
       <View style={[styles.container, { paddingTop: insets.top || 20 }]}>
         <View style={styles.chatHeader}>
           <TouchableOpacity onPress={clearConnection} style={styles.iconBtn}><Feather name="chevron-left" size={24} color={colors.text} /></TouchableOpacity>
-          <Text style={styles.headerTitle}>文件传输</Text>
+          <Text style={styles.headerTitle}>局域网互传</Text>
           <View style={{ width: 40 }} />
         </View>
 
@@ -935,7 +935,7 @@ export default function ScannerScreen() {
                 <Text style={styles.emptyHistoryDesc}>
                   {hasLoadedHistory
                     ? '当前没有可显示的历史消息'
-                    : '下拉即可主动加载之前的文件传输记录'}
+                    : '下拉加载之前的传输记录'}
                 </Text>
               </View>
             }
@@ -1224,34 +1224,17 @@ export default function ScannerScreen() {
 
   return (
     <View style={styles.container}>
+      <Text style={styles.promptHugeTitle}>互传</Text>
       <View style={styles.promptBox}>
         <View style={styles.heroIconBox}>
-          <Feather name="share-2" size={40} color={colors.text} />
+          <Feather name="monitor" size={34} color={colors.text} />
         </View>
-        <Text style={styles.promptTitle}>局域网速传</Text>
-        
-        <View style={styles.instructionList}>
-          <View style={styles.instructionItem}>
-            <View style={styles.instructionNumber}><Text style={styles.instructionNumberText}>1</Text></View>
-            <Text style={styles.instructionText}>电脑端打开 TIEZ</Text>
-          </View>
-          <View style={styles.instructionItem}>
-            <View style={styles.instructionNumber}><Text style={styles.instructionNumberText}>2</Text></View>
-            <Text style={styles.instructionText}>在 TIEZ 设置项打开“局域网文件传输”</Text>
-          </View>
-          <View style={styles.instructionItem}>
-            <View style={styles.instructionNumber}><Text style={styles.instructionNumberText}>3</Text></View>
-            <Text style={styles.instructionText}>确保手机和 PC 在同一局域网下</Text>
-          </View>
-          <View style={styles.instructionItem}>
-            <View style={styles.instructionNumber}><Text style={styles.instructionNumberText}>4</Text></View>
-            <Text style={styles.instructionText}>点击“立即扫码”即可畅传文件</Text>
-          </View>
-        </View>
-
+        <Text style={styles.promptTitle}>连接电脑</Text>
+        <Text style={styles.promptText}>{'在电脑上打开 TieZ 的「局域网互传」\n扫描屏幕上的二维码'}</Text>
+        <Text style={styles.promptHint}>手机和电脑需连同一个 Wi-Fi</Text>
         <TouchableOpacity style={styles.mainActionBtn} onPress={startScanning}>
           <Feather name="maximize" size={20} color={colors.primaryText} style={{ marginRight: 8 }} />
-          <Text style={styles.mainActionText}>立即扫码</Text>
+          <Text style={styles.mainActionText}>扫码连接</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -1327,7 +1310,8 @@ function ActionItem({ icon, label, color, onPress, onLongPress, styles }: any) {
 
 const getStyles = (colors: any, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  promptBox: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
+  // Centered in the space under the title, a little above the middle.
+  promptBox: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40, paddingBottom: 100 },
   captureContainer: { flex: 1, backgroundColor: '#000' },
   capturePreviewMedia: {
     ...StyleSheet.absoluteFillObject,
@@ -1464,12 +1448,11 @@ const getStyles = (colors: any, isDark: boolean) => StyleSheet.create({
     fontWeight: '700'
   },
   heroIconBox: { width: 80, height: 80, borderRadius: 24, backgroundColor: colors.card, justifyContent: 'center', alignItems: 'center', marginBottom: 24 },
-  promptTitle: { fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: 24 },
-  instructionList: { width: '100%', marginBottom: 44, paddingHorizontal: 10 },
-  instructionItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
-  instructionNumber: { width: 22, height: 22, borderRadius: 11, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  instructionNumberText: { color: colors.primaryText, fontSize: 13, fontWeight: '800' },
-  instructionText: { color: colors.text, fontSize: 15, fontWeight: '500' },
+  // Title level with the other tabs (paddingTop 80, as on the settings page).
+  promptHugeTitle: { fontSize: 36, fontWeight: '700', color: colors.text, paddingTop: 80, paddingHorizontal: 20 },
+  promptTitle: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: 10 },
+  promptText: { color: colors.text, fontSize: 15, lineHeight: 22, textAlign: 'center', marginBottom: 6 },
+  promptHint: { color: colors.subText, fontSize: 13, textAlign: 'center', marginBottom: 32 },
   mainActionBtn: { backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 48, borderRadius: 16 },
   mainActionText: { color: colors.primaryText, fontSize: 17, fontWeight: '600' },
   chatHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.divider },
