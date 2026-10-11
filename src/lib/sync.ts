@@ -25,12 +25,15 @@ export type MobileSyncSettings = {
   mqttProtocol: MqttProtocol;
   mqttWsPath: string;
   mqttTlsInsecure: boolean;
+  /** Shared end-to-end key (base64url); "" = encryption off. See lib/e2eCore.ts. */
+  e2eKey: string;
   autoPushOnLaunch: boolean;
   pushStrategy: PushStrategy;
   recentLimit: RecentLimit;
 };
 
 import { publishToMqtt, publishBatchToMqtt } from './mqtt_client';
+import { type E2eKind, isSealed, openBox, parseE2eKey, seal } from './e2e';
 
 export type SyncedEntry = {
   id: string;
@@ -128,6 +131,7 @@ export const STORAGE_KEYS = {
   mqttProtocol: 'mobile.sync_mqtt_protocol',
   mqttWsPath: 'mobile.sync_mqtt_ws_path',
   mqttTlsInsecure: 'mobile.sync_mqtt_tls_insecure',
+  e2eKey: 'mobile.e2e_key',
   autoPushOnLaunch: 'mobile.auto_push_on_launch',
   pushStrategy: 'mobile.push_strategy',
   recentLimit: 'mobile.home_recent_limit',
@@ -161,6 +165,7 @@ const DEFAULT_SETTINGS: MobileSyncSettings = {
   mqttProtocol: 'wss://',
   mqttWsPath: '/mqtt',
   mqttTlsInsecure: false,
+  e2eKey: '',
   autoPushOnLaunch: false,
   pushStrategy: 'mqtt',
   recentLimit: 10,
@@ -182,6 +187,7 @@ const SENSITIVE_SETTING_KEYS = [
   STORAGE_KEYS.webdavPassword,
   STORAGE_KEYS.mqttUsername,
   STORAGE_KEYS.mqttPassword,
+  STORAGE_KEYS.e2eKey,
 ] as const;
 
 async function isSecureStoreAvailable() {
@@ -636,7 +642,10 @@ async function fetchWebDavBlob(settings: MobileSyncSettings, blobsPath: string, 
     throw new Error(`WebDAV blob 读取失败：${response.status}${text ? ` ${text}` : ''}`);
   }
 
-  const buffer = new Uint8Array(await response.arrayBuffer());
+  const buffer = openDownloaded(settings, 'blob', new Uint8Array(await response.arrayBuffer()));
+  if (!buffer) {
+    throw new Error('WebDAV blob 无法用本机的端到端密钥读取');
+  }
   logWebDavDebug('BLOB success', {
     url,
     status: response.status,
@@ -933,7 +942,38 @@ async function listWebDavCollection(settings: MobileSyncSettings, relativePath: 
   return text;
 }
 
-async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: string) {
+/** Set when a file was skipped because its encryption doesn't match ours. */
+let e2eMismatchSeen = false;
+
+let e2eMismatchListener: (() => void) | null = null;
+
+/** Called after a sync that had to skip files (see openDownloaded). */
+export function setE2eMismatchListener(listener: (() => void) | null) {
+  e2eMismatchListener = listener;
+}
+
+function reportE2eMismatch() {
+  if (!e2eMismatchSeen) return;
+  e2eMismatchSeen = false;
+  e2eMismatchListener?.();
+}
+
+/**
+ * A downloaded sync file's bytes, opened if sealed (docs/E2E-ENCRYPTION.md).
+ * Null when this device can't use it: plaintext while a key is set, sealed
+ * without one, or sealed with another key. Such files are skipped.
+ */
+function openDownloaded(settings: MobileSyncSettings, kind: E2eKind, bytes: Uint8Array): Uint8Array | null {
+  const keys = parseE2eKey(settings.e2eKey);
+  const sealed = isSealed(bytes);
+  if (!keys && !sealed) return bytes;
+  const opened = keys && sealed ? openBox(keys, kind, bytes) : null;
+  if (!opened) e2eMismatchSeen = true;
+  return opened;
+}
+
+/** `e2eKind` seals/opens the file when a key is set; omit it for the sync head. */
+async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: string, e2eKind?: E2eKind) {
   const url = joinWebDavUrl(settings.webdavUrl, relativePath);
   logWebDavDebug('GET request', { url, relativePath });
   const response = await fetch(url, {
@@ -955,7 +995,17 @@ async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: st
     throw new Error(`WebDAV 读取失败：${response.status}${text ? ` ${text}` : ''}`);
   }
 
-  const text = await response.text();
+  let text: string;
+  if (e2eKind) {
+    const opened = openDownloaded(settings, e2eKind, new Uint8Array(await response.arrayBuffer()));
+    if (!opened) {
+      logWebDavDebug('GET skipped (end-to-end mismatch)', { url });
+      return null;
+    }
+    text = new TextDecoder().decode(opened);
+  } else {
+    text = await response.text();
+  }
   logWebDavDebug('GET success', {
     url,
     status: response.status,
@@ -964,7 +1014,7 @@ async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: st
   return JSON.parse(text) as T;
 }
 
-async function putWebDavJson(settings: MobileSyncSettings, relativePath: string, payload: unknown) {
+async function putWebDavJson(settings: MobileSyncSettings, relativePath: string, payload: unknown, e2eKind?: E2eKind) {
   const url = joinWebDavUrl(settings.webdavUrl, relativePath);
   logWebDavDebug('PUT request', {
     url,
@@ -976,7 +1026,7 @@ async function putWebDavJson(settings: MobileSyncSettings, relativePath: string,
     headers: buildAuthHeaders(settings, {
       'Content-Type': 'application/json',
     }),
-    body: JSON.stringify(payload),
+    body: sealedBody(settings, e2eKind, JSON.stringify(payload)),
   });
 
   if (!response.ok) {
@@ -992,6 +1042,11 @@ async function putWebDavJson(settings: MobileSyncSettings, relativePath: string,
   logWebDavDebug('PUT success', { url, status: response.status });
 }
 
+function sealedBody(settings: MobileSyncSettings, e2eKind: E2eKind | undefined, json: string) {
+  const keys = e2eKind ? parseE2eKey(settings.e2eKey) : null;
+  return keys && e2eKind ? seal(keys, e2eKind, new TextEncoder().encode(json)) : json;
+}
+
 async function listWebDavSnapshotIds(settings: MobileSyncSettings, devicesPath: string) {
   return parseSnapshotIds(await listWebDavCollection(settings, devicesPath));
 }
@@ -1004,7 +1059,8 @@ async function fetchWebDavSnapshot(
 ) {
   const snapshot = await fetchWebDavJson<WebDavDeviceSnapshot>(
     settings,
-    `${devicesPath}/${deviceId}.json`
+    `${devicesPath}/${deviceId}.json`,
+    'snapshot'
   );
   if (!snapshot) return null;
 
@@ -1036,7 +1092,8 @@ async function fetchWebDavOpsBatch(
 ) {
   const batch = await fetchWebDavJson<WebDavOpsBatch>(
     settings,
-    `${opsPath}/${webDavOpsFilename(opRef.device_id, opRef.seq)}`
+    `${opsPath}/${webDavOpsFilename(opRef.device_id, opRef.seq)}`,
+    'ops'
   );
 
   if (!batch) return null;
@@ -1155,7 +1212,7 @@ async function uploadWebDavOpsBatch(
     entries,
   };
 
-  await putWebDavJson(settings, `${opsPath}/${webDavOpsFilename(deviceId, seq)}`, batch);
+  await putWebDavJson(settings, `${opsPath}/${webDavOpsFilename(deviceId, seq)}`, batch, 'ops');
 }
 
 async function uploadWebDavSnapshot(
@@ -1172,7 +1229,7 @@ async function uploadWebDavSnapshot(
     entries,
   };
 
-  await putWebDavJson(settings, `${devicesPath}/${deviceId}.json`, snapshot);
+  await putWebDavJson(settings, `${devicesPath}/${deviceId}.json`, snapshot, 'snapshot');
 }
 
 function updateWebDavHeadDevice(
@@ -1394,6 +1451,7 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     mqttProtocol,
     mqttWsPath,
     mqttTlsInsecure,
+    e2eKey,
     autoPushOnLaunch,
     pushStrategy,
   ] = await Promise.all([
@@ -1411,6 +1469,7 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     AsyncStorage.getItem(STORAGE_KEYS.mqttProtocol),
     AsyncStorage.getItem(STORAGE_KEYS.mqttWsPath),
     AsyncStorage.getItem(STORAGE_KEYS.mqttTlsInsecure),
+    loadSensitiveSetting(STORAGE_KEYS.e2eKey),
     AsyncStorage.getItem(STORAGE_KEYS.autoPushOnLaunch),
     AsyncStorage.getItem(STORAGE_KEYS.pushStrategy),
   ]);
@@ -1432,6 +1491,7 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     mqttProtocol: (mqttProtocol as MqttProtocol) ?? DEFAULT_SETTINGS.mqttProtocol,
     mqttWsPath: mqttWsPath ?? DEFAULT_SETTINGS.mqttWsPath,
     mqttTlsInsecure: mqttTlsInsecure === 'true',
+    e2eKey: e2eKey ?? DEFAULT_SETTINGS.e2eKey,
     autoPushOnLaunch: autoPushOnLaunch === 'true',
     pushStrategy: (pushStrategy as PushStrategy) ?? DEFAULT_SETTINGS.pushStrategy,
   };
@@ -1457,6 +1517,7 @@ export async function saveMobileSyncSettings(settings: MobileSyncSettings) {
     saveSensitiveSetting(STORAGE_KEYS.webdavPassword, settings.webdavPassword),
     saveSensitiveSetting(STORAGE_KEYS.mqttUsername, settings.mqttUsername.trim()),
     saveSensitiveSetting(STORAGE_KEYS.mqttPassword, settings.mqttPassword),
+    saveSensitiveSetting(STORAGE_KEYS.e2eKey, settings.e2eKey.trim()),
   ]);
 }
 
@@ -1519,6 +1580,7 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
     }
 
     const pulledItems = await pullRemoteWebDavSnapshotsFromHead(settings, paths, syncHead);
+    reportE2eMismatch();
     return dedupeEntries(
       pulledItems
         .filter((item) => isVisibleCloudItem(item))

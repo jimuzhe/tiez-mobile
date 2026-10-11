@@ -1,4 +1,5 @@
 import type { MobileSyncSettings, MqttProtocol } from './sync';
+import { parseE2eKey } from './e2eCore';
 
 export type TiezMqttQrPayload = {
   v: 1;
@@ -12,6 +13,8 @@ export type TiezMqttQrPayload = {
     password?: string;
     topic?: string;
   };
+  /** End-to-end key when the desktop has encryption on (docs/E2E-ENCRYPTION.md). */
+  e2eKey?: string;
 };
 
 export type TiezWebdavQrPayload = {
@@ -23,6 +26,7 @@ export type TiezWebdavQrPayload = {
     password?: string;
     basePath?: string;
   };
+  e2eKey?: string;
 };
 
 export type ParsedConfigQr =
@@ -88,6 +92,7 @@ export function parseTiezConfigQr(raw: string): ParsedConfigQr {
           password: String(mqtt.password ?? ''),
           topic,
         },
+        e2eKey: asTrimmed(data.e2eKey),
       },
     };
   }
@@ -110,6 +115,7 @@ export function parseTiezConfigQr(raw: string): ParsedConfigQr {
           password: String(webdav.password ?? ''),
           basePath: asTrimmed(webdav.basePath) || 'tiez-sync',
         },
+        e2eKey: asTrimmed(data.e2eKey),
       },
     };
   }
@@ -122,6 +128,14 @@ export function applyConfigQrToSettings(
   parsed: ParsedConfigQr
 ): { next: MobileSyncSettings; warnings: string[] } {
   const warnings = [...parsed.warnings];
+  // The code mirrors the desktop: its key, or none when encryption is off
+  // there (a phone keeping an old key would send what the desktop can't read).
+  const e2eKey = parseE2eKey(parsed.payload.e2eKey) ? parsed.payload.e2eKey! : '';
+  if (e2eKey && e2eKey !== current.e2eKey) {
+    warnings.push('已导入端到端加密密钥。');
+  } else if (!e2eKey && current.e2eKey) {
+    warnings.push('电脑端没有开启端到端加密，手机端已关闭加密。');
+  }
 
   if (parsed.kind === 'mqtt') {
     const mqtt = parsed.payload.mqtt;
@@ -142,6 +156,7 @@ export function applyConfigQrToSettings(
         mqttUsername: asTrimmed(mqtt.username),
         mqttPassword: String(mqtt.password ?? ''),
         mqttTopic: asTrimmed(mqtt.topic),
+        e2eKey,
         pushStrategy: 'mqtt',
       },
     };
@@ -156,6 +171,7 @@ export function applyConfigQrToSettings(
       webdavUsername: asTrimmed(webdav.username),
       webdavPassword: String(webdav.password ?? ''),
       webdavBasePath: asTrimmed(webdav.basePath) || 'tiez-sync',
+      e2eKey,
       pushStrategy: 'webdav',
     },
   };

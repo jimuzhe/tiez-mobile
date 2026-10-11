@@ -8,6 +8,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "validate:versions": "node scripts/validate-versions.mjs",
+    "test:e2e": "node --experimental-strip-types scripts/e2e-vectors.test.mts",
     "release:stable:android": "node scripts/build-release.mjs android stable",
     "release:stable:ios": "node scripts/build-release.mjs ios stable",
     "release:beta:android": "node scripts/build-release.mjs android beta",
@@ -16,6 +17,8 @@
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
     "@expo/vector-icons": "^15.0.3",
+    "@noble/ciphers": "1.3.0",
+    "@noble/hashes": "1.8.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.9",
     "@react-navigation/native": "^7.2.2",

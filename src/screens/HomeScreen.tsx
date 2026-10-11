@@ -31,6 +31,7 @@ import {
   formatRelativeTime,
   loadMobileSyncSettings,
   pushClipboardBatchToPc,
+  setE2eMismatchListener,
 } from '../lib/sync';
 import type { 
   LocalClipboardEntry, 
@@ -90,6 +91,15 @@ export default function HomeScreen({ navigation }: any) {
     { id: 'manual-0', text: '' },
   ]);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+
+  // Files written without our end-to-end key (or with another one) are
+  // skipped during a pull; say so instead of silently showing less.
+  useEffect(() => {
+    setE2eMismatchListener(() =>
+      setFeedbackMessage('有设备的同步数据没有加密或密钥不同，已跳过。请让所有设备使用同一把端到端密钥。')
+    );
+    return () => setE2eMismatchListener(null);
+  }, []);
   const feedbackAnim = useRef(new Animated.Value(0)).current;
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
 
