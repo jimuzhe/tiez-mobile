@@ -508,8 +508,8 @@ export default function SettingsScreen() {
               <Feather name="send" size={18} color={colors.text} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={dynamicStyles.rowText}>推送实现策略</Text>
-              <Text style={{ color: colors.primary, fontSize: 11, fontWeight: '600' }}>MQTT 体验更好、更快速</Text>
+              <Text style={dynamicStyles.rowText}>推送方式</Text>
+              <Text style={{ color: colors.subText, fontSize: 11 }}>MQTT 更快</Text>
             </View>
             <View style={dynamicStyles.segmentedControl}>
               {(['mqtt', 'webdav'] as const).map((strategy) => (
@@ -533,7 +533,7 @@ export default function SettingsScreen() {
 
           <TouchableOpacity style={[styles.row, { paddingVertical: 18 }]} activeOpacity={0.7} onPress={toggleMQTT}>
             <View style={dynamicStyles.iconBox}>
-              <Feather name="zap" size={18} color={colors.text} />
+              <Feather name="radio" size={18} color={colors.text} />
             </View>
             <Text style={dynamicStyles.rowText}>MQTT 推送配置</Text>
             <Text style={[dynamicStyles.valueText, { marginRight: 8, fontSize: 13 }]}>{isMQTTExpanded ? '收起' : '修改'}</Text>
