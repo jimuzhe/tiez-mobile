@@ -40,7 +40,7 @@ import { useHaptics } from '../context/HapticContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   buildTransferUrl,
-  buildTransferWebSocketUrl,
+  openTransferSocket,
   clearStoredTransferConnection,
   loadStoredTransferConnection,
   parseTransferConnection,
@@ -226,7 +226,7 @@ export default function ScannerScreen() {
     const connect = () => {
       if (disposed || !shouldReconnectRef.current) return;
 
-      const socket = new WebSocket(buildTransferWebSocketUrl(connection));
+      const socket = openTransferSocket(connection);
       if (connection.lanKey) socket.binaryType = 'arraybuffer';
       ws.current = socket;
 
