@@ -1635,6 +1635,10 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
   }
 }
 
+// Off the PC's Wi-Fi a send waits for the system's network timeout (none on
+// Android's fetch), which held up the MQTT or WebDAV push behind it.
+const LAN_SEND_TIMEOUT_MS = 4000;
+
 export async function syncClipboardTextToPc(content: string) {
   const rawConnection = await loadStoredTransferConnection();
   if (!rawConnection?.trim()) {
@@ -1642,11 +1646,13 @@ export async function syncClipboardTextToPc(content: string) {
   }
 
   const connection = parseTransferConnection(rawConnection);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LAN_SEND_TIMEOUT_MS);
   const response = await sendTransferText(connection, {
     content,
     sender_id: 'mobile-home-sync',
     sender_name: '手机端',
-  });
+  }, controller.signal).finally(() => clearTimeout(timer));
 
   if (!response.ok) {
     const message = await response.text().catch(() => '');
@@ -1673,12 +1679,15 @@ export async function pushClipboardBatchToPc(entries: LocalClipboardEntry[]) {
     throw new Error('当前选择了 WebDAV 策略但尚未配置。请先在设置中填写 WebDAV 详细信息，或切换到 MQTT。');
   }
 
-  // 2. 本地局域网传输 (如果在线)
-  try {
-    for (const entry of entries) {
-      await syncClipboardTextToPc(entry.content).catch(() => {});
+  // 2. 本地局域网传输 (如果在线)：the first send that fails means the PC
+  // isn't reachable; trying each entry in turn only added waits.
+  for (const entry of entries) {
+    try {
+      await syncClipboardTextToPc(entry.content);
+    } catch {
+      break;
     }
-  } catch (e) {}
+  }
 
   // 3. 执行云同步
   if (isStrategyMqtt) {

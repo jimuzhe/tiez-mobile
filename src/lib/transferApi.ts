@@ -41,18 +41,21 @@ export async function fetchTransferMessages(connection: TransferConnection, last
 export function sendTransferText(
   connection: TransferConnection,
   payload: { content: string; sender_id: string; sender_name: string },
+  signal?: AbortSignal,
 ) {
   if (!connection.lanKey) {
     return fetch(buildTransferUrl(connection, '/send_text'), {
       method: 'POST',
       headers: buildTransferHeaders(connection, JSON_TYPE),
       body: JSON.stringify(payload),
+      signal,
     });
   }
   return fetch(buildTransferUrl(connection, '/s/send-text'), {
     method: 'POST',
     headers: buildTransferHeaders(connection, OCTET),
     body: sealLan(connection.lanKey, 'text', encodeJson(payload)),
+    signal,
   });
 }
 
