@@ -121,6 +121,20 @@ export async function downloadTransferFile(connection: TransferConnection, url: 
 
 const mediaCache = new Map<string, Promise<string>>();
 
+/** A file message's name: the PC links files as /download/<token>?name=<name>. */
+export function transferFileName(content: string): string {
+  const index = content.indexOf('?name=');
+  if (index >= 0) {
+    const raw = content.slice(index + '?name='.length);
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return content.split('/').pop()?.split('?')[0] || content;
+}
+
 /**
  * Where <Image>/<VideoView> can load a message's picture or video: the URL
  * itself without encryption, a decrypted cache file with it.

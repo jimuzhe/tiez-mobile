@@ -55,6 +55,7 @@ import {
   resolveTransferMedia,
   sendTransferText,
   uploadTransferChunk,
+  transferFileName,
 } from '../lib/transferApi';
 
 const { width } = Dimensions.get('window');
@@ -887,7 +888,7 @@ export default function ScannerScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Feather name={item.msg_type === 'image' ? 'image' : (item.msg_type === 'video' ? 'video' : 'file')} size={20} color={isMe ? colors.primaryText : colors.text} />
                   <Text style={[styles.fileName, isMe ? styles.myText : styles.otherText]} numberOfLines={1}>
-                    {item.msg_type === 'image' ? '图片文件' : (item.msg_type === 'video' ? '视频文件' : item.content.split('/').pop()?.split('?')[0])}
+                    {item.msg_type === 'image' ? '图片文件' : (item.msg_type === 'video' ? '视频文件' : transferFileName(item.content))}
                   </Text>
                 </View>
                 {showUploadBadge && (
