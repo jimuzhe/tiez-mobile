@@ -439,7 +439,10 @@ function computeSyncContentHash(contentType: string, content: string) {
 }
 
 function resolvedContentHash(item: CloudSyncItem) {
-  if (item.deleted_at === 0 && item.content) {
+  // With a blob, the content may be what the cache keeps in its place
+  // ("[image content]", a shortened preview): keep the hash of the real one,
+  // as normalizeCloudItem does. Rehashing made each cached item a new one.
+  if (item.deleted_at === 0 && item.content && !item.content_blob_hash) {
     return computeSyncContentHash(item.content_type, item.content);
   }
   return item.content_hash || computeSyncContentHash(item.content_type, item.content);
