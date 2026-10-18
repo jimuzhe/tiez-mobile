@@ -52,6 +52,7 @@ import {
   downloadTransferFile,
   encodeSocketMessage,
   fetchTransferMessages,
+  TransferHttpError,
   resolveTransferMedia,
   sendTransferText,
   uploadTransferChunk,
@@ -108,6 +109,9 @@ export default function ScannerScreen() {
   const [uploadProgress, setUploadProgress] = useState(0); // 0-1
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
+  // The computer refuses this pairing: it restarted file transfer, which
+  // makes a new one. Reconnecting can't help; scanning again does.
+  const [pairingExpired, setPairingExpired] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const { hapticLevel, triggerHaptic } = useHaptics();
@@ -220,6 +224,7 @@ export default function ScannerScreen() {
     let disposed = false;
     shouldReconnectRef.current = true;
     reconnectAttemptsRef.current = 0;
+    setPairingExpired(false);
     setMessages([]);
     setHasLoadedHistory(false);
     setIsLoadingHistory(false);
@@ -231,7 +236,9 @@ export default function ScannerScreen() {
       if (connection.lanKey) socket.binaryType = 'arraybuffer';
       ws.current = socket;
 
+      let opened = false;
       socket.onopen = () => {
+        opened = true;
         reconnectAttemptsRef.current = 0;
         socket.send(encodeSocketMessage(connection, {
           type: 'identity',
@@ -285,7 +292,25 @@ export default function ScannerScreen() {
         if (disposed || !shouldReconnectRef.current || ws.current !== socket) return;
         const attempt = reconnectAttemptsRef.current++;
         const delay = Math.min(MAX_RECONNECT_DELAY_MS, 750 * (2 ** Math.min(attempt, 5)));
-        reconnectTimeoutRef.current = setTimeout(connect, delay);
+        const retry = () => {
+          if (disposed || !shouldReconnectRef.current) return;
+          reconnectTimeoutRef.current = setTimeout(connect, delay);
+        };
+        if (opened) {
+          retry();
+          return;
+        }
+        // Never got in: ask why with a request that returns nothing new.
+        fetchTransferMessages(connection, Number.MAX_SAFE_INTEGER)
+          .then(retry)
+          .catch((error) => {
+            if (error instanceof TransferHttpError && (error.status === 401 || error.status === 403)) {
+              shouldReconnectRef.current = false;
+              setPairingExpired(true);
+            } else {
+              retry();
+            }
+          });
       };
     };
 
@@ -347,6 +372,9 @@ export default function ScannerScreen() {
       }
     } catch (e) {
       console.log('Fetch history failed', e);
+      if (e instanceof TransferHttpError && (e.status === 401 || e.status === 403)) {
+        setPairingExpired(true);
+      }
     } finally {
       setHasLoadedHistory(true);
       setIsLoadingHistory(false);
@@ -924,6 +952,17 @@ export default function ScannerScreen() {
           <Text style={styles.headerTitle}>局域网互传</Text>
           <View style={{ width: 40 }} />
         </View>
+
+        {pairingExpired && (
+          <View style={{ margin: 16, padding: 14, borderRadius: 12, backgroundColor: colors.card, gap: 10 }}>
+            <Text style={{ color: colors.text, fontSize: 14, lineHeight: 20 }}>
+              连接已失效。电脑重新打开了「局域网互传」，请重新扫描电脑上的二维码。
+            </Text>
+            <TouchableOpacity onPress={clearConnection}>
+              <Text style={{ color: colors.primary, fontSize: 14, fontWeight: '600' }}>重新扫码</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={{ flex: 1, paddingBottom: (isKeyboardVisible || isPlusMenuOpen) ? 0 : 85 }}>
           <FlatList
