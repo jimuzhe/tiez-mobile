@@ -1622,10 +1622,12 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
     return [];
   }
 
-  const paths = await ensureWebDavDirectories(settings);
   const cachedItems = await loadWebDavPulledItems(settings);
 
   try {
+    // Inside the try: offline, this fails first, and the cached items below
+    // are what should show then.
+    const paths = await ensureWebDavDirectories(settings);
     let syncHead = await resolveWebDavSyncHead(settings, paths);
     const { headStale } = await pullRemoteWebDavOpsFromHead(settings, paths, syncHead);
 

@@ -88,6 +88,7 @@ export default function HomeScreen({ navigation }: any) {
   const hasAutoPushedRef = useRef(false);
   const [currentClipboardEntry, setCurrentClipboardEntry] = useState<LocalClipboardEntry | null>(null);
   const [pullRecord, setPullRecord] = useState<WebDavDisplayRecord>(EMPTY_PULL_RECORD);
+  const [pullError, setPullError] = useState<string | null>(null);
   const [selectedPushIds, setSelectedPushIds] = useState<string[]>([]);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [manualInputs, setManualInputs] = useState<Array<{ id: string; text: string }>>([
@@ -208,6 +209,18 @@ export default function HomeScreen({ navigation }: any) {
   const modeRef = useRef(mode);
   modeRef.current = mode;
 
+  // A failed pull keeps what was shown and says why; it used to show an
+  // empty list, as if the PC had nothing.
+  const loadPullRecord = useCallback(async (nextSettings: MobileSyncSettings) => {
+    try {
+      const entries = await fetchWebDavEntries(nextSettings);
+      setPullRecord(buildWebDavDisplayRecord(entries, nextSettings.recentLimit));
+      setPullError(null);
+    } catch (error) {
+      setPullError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
   const loadHomeData = useCallback(async (withRefreshState = false) => {
     if (withRefreshState) setRefreshing(true);
     else setIsLoading(true);
@@ -226,10 +239,7 @@ export default function HomeScreen({ navigation }: any) {
 
       // 如果当前已经是 pull 模式（比如从设置页返回），则需要顺带加载远程数据
       if (modeRef.current === 'pull') {
-        const entries = await fetchWebDavEntries(nextSettings)
-          .then((entries) => buildWebDavDisplayRecord(entries, nextSettings.recentLimit))
-          .catch(() => EMPTY_PULL_RECORD);
-        setPullRecord(entries);
+        await loadPullRecord(nextSettings);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : '加载本地数据失败';
@@ -238,7 +248,7 @@ export default function HomeScreen({ navigation }: any) {
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [captureClipboardSnapshot]);
+  }, [captureClipboardSnapshot, loadPullRecord]);
 
   // 当用户切换到拉取模式时，如果当前数据为空或需要更新，主动触发拉取
   useEffect(() => {
@@ -246,10 +256,7 @@ export default function HomeScreen({ navigation }: any) {
       const doFetchPull = async () => {
         setIsLoading(true);
         try {
-          const entries = await fetchWebDavEntries(settings)
-            .then((entries) => buildWebDavDisplayRecord(entries, settings.recentLimit))
-            .catch(() => EMPTY_PULL_RECORD);
-          setPullRecord(entries);
+          await loadPullRecord(settings);
         } finally {
           setIsLoading(false);
         }
@@ -704,6 +711,13 @@ export default function HomeScreen({ navigation }: any) {
         <View style={dynamicStyles.infoCard}>
           <Text style={dynamicStyles.infoTitle}>先配置 WebDAV</Text>
           <Text style={dynamicStyles.infoText}>到设置页填写 WebDAV 地址、账号、密码和基础路径后，拉取页才会显示 PC 端的主记录。</Text>
+        </View>
+      ) : null}
+
+      {settings?.webdavUrl && pullError ? (
+        <View style={dynamicStyles.infoCard}>
+          <Text style={dynamicStyles.infoTitle}>拉取失败</Text>
+          <Text style={dynamicStyles.infoText}>{pullError}</Text>
         </View>
       ) : null}
 
