@@ -371,9 +371,12 @@ function buildAuthHeaders(settings: MobileSyncSettings, extra?: Record<string, s
   };
 
   if (settings.webdavUsername.trim()) {
-    headers.Authorization = `Basic ${encodeBase64(
+    // UTF-8, as the PC sends them: encodeBase64 takes one byte per character,
+    // so a name or password with other characters didn't match.
+    const credentials = new TextEncoder().encode(
       `${settings.webdavUsername.trim()}:${settings.webdavPassword.trim()}`
-    )}`;
+    );
+    headers.Authorization = `Basic ${encodeBase64(String.fromCharCode(...credentials))}`;
   }
 
   return headers;
