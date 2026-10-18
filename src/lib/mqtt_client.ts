@@ -1,6 +1,7 @@
 import mqtt from 'mqtt';
 import type { MobileSyncSettings } from './sync';
 import { parseE2eKey, sealMqttMessage } from './e2e';
+import { buildMqttUrl } from './mqttUrl';
 
 /** The message the desktop expects; sealed when an end-to-end key is set. */
 function buildPayload(content: string, settings: MobileSyncSettings) {
@@ -25,10 +26,8 @@ export async function publishToMqtt(content: string, settings: MobileSyncSetting
     throw new Error('MQTT 配置不完整');
   }
 
-  // 构建连接 URL
   // mqtt.js v5 在浏览器/RN 环境下会自动选择 websocket
-  const host = mqttServer.replace(/^(wss?:\/\/)/, '').replace(/^(mqtts?:\/\/)/, '');
-  const url = `${mqttProtocol}${host}:${mqttPort}${mqttProtocol.startsWith('ws') ? mqttWsPath : ''}`;
+  const url = buildMqttUrl({ mqttServer, mqttPort, mqttProtocol, mqttWsPath });
 
   console.log(`[MQTT] Connecting to ${url}...`);
 
@@ -88,8 +87,7 @@ export async function publishBatchToMqtt(contents: string[], settings: MobileSyn
     throw new Error('MQTT 配置不完整');
   }
 
-  const host = mqttServer.replace(/^(wss?:\/\/)/, '').replace(/^(mqtts?:\/\/)/, '');
-  const url = `${mqttProtocol}${host}:${mqttPort}${mqttProtocol.startsWith('ws') ? mqttWsPath : ''}`;
+  const url = buildMqttUrl({ mqttServer, mqttPort, mqttProtocol, mqttWsPath });
 
   console.log(`[MQTT Batch] Connecting to ${url}...`);
 

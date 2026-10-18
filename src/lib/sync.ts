@@ -345,8 +345,10 @@ function encodeBase64(input: string) {
   return output;
 }
 
+// Empty means the default folder, as on the PC: an empty field used to put
+// the phone's files at the server's root, where the PC never looks.
 function normalizeWebDavBasePath(raw: string) {
-  return raw.trim().replace(/^\/+|\/+$/g, '');
+  return raw.trim().replace(/^\/+|\/+$/g, '') || DEFAULT_SETTINGS.webdavBasePath;
 }
 
 function encodeRelativePath(relativePath: string) {
@@ -369,9 +371,12 @@ function buildAuthHeaders(settings: MobileSyncSettings, extra?: Record<string, s
   };
 
   if (settings.webdavUsername.trim()) {
-    headers.Authorization = `Basic ${encodeBase64(
+    // UTF-8, as the PC sends them: encodeBase64 takes one byte per character,
+    // so a name or password with other characters didn't match.
+    const credentials = new TextEncoder().encode(
       `${settings.webdavUsername.trim()}:${settings.webdavPassword.trim()}`
-    )}`;
+    );
+    headers.Authorization = `Basic ${encodeBase64(String.fromCharCode(...credentials))}`;
   }
 
   return headers;
@@ -439,7 +444,10 @@ function computeSyncContentHash(contentType: string, content: string) {
 }
 
 function resolvedContentHash(item: CloudSyncItem) {
-  if (item.deleted_at === 0 && item.content) {
+  // With a blob, the content may be what the cache keeps in its place
+  // ("[image content]", a shortened preview): keep the hash of the real one,
+  // as normalizeCloudItem does. Rehashing made each cached item a new one.
+  if (item.deleted_at === 0 && item.content && !item.content_blob_hash) {
     return computeSyncContentHash(item.content_type, item.content);
   }
   return item.content_hash || computeSyncContentHash(item.content_type, item.content);
@@ -653,38 +661,52 @@ async function fetchWebDavBlob(settings: MobileSyncSettings, blobsPath: string, 
   return buffer;
 }
 
+/**
+ * Fills in blob contents. An item whose blob can't be read (missing, server
+ * error, another key) is left out instead of failing the pull: one used to
+ * hide the whole device's snapshot. The PC skips it the same way.
+ */
 async function enrichCloudItemsAfterPull(items: CloudSyncItem[], settings: MobileSyncSettings, blobsPath: string) {
+  const kept: CloudSyncItem[] = [];
   for (const item of items) {
-    if (item.content_blob_hash) {
-      const kind = item.content_type === 'image' ? 'image' : 'content';
-      const bytes = await fetchWebDavBlob(settings, blobsPath, kind, item.content_blob_hash);
-      item.content = item.content_type === 'image'
-        ? imageDataUrlFromBytes(bytes)
-        : new TextDecoder().decode(bytes);
+    try {
+      await enrichCloudItem(item, settings, blobsPath);
+      kept.push(item);
+    } catch (error) {
+      logWebDavDebug('Skipping an item whose blob failed to download', { error: String(error) });
     }
+  }
+  return kept;
+}
 
-    if (item.content_type === 'rich_text') {
-      item.html_content = null;
-      item.html_blob_hash = null;
-    } else if (item.html_blob_hash) {
-      const bytes = await fetchWebDavBlob(settings, blobsPath, 'html', item.html_blob_hash);
-      item.html_content = new TextDecoder().decode(bytes);
-    }
+async function enrichCloudItem(item: CloudSyncItem, settings: MobileSyncSettings, blobsPath: string) {
+  if (item.content_blob_hash) {
+    const kind = item.content_type === 'image' ? 'image' : 'content';
+    const bytes = await fetchWebDavBlob(settings, blobsPath, kind, item.content_blob_hash);
+    item.content = item.content_type === 'image'
+      ? imageDataUrlFromBytes(bytes)
+      : new TextDecoder().decode(bytes);
+  }
 
-    if (!item.preview.trim()) {
-      if (item.content_type === 'image') {
-        item.preview = '图片';
-      } else {
-        item.preview = item.content.slice(0, 160);
-      }
-    }
+  if (item.content_type === 'rich_text') {
+    item.html_content = null;
+    item.html_blob_hash = null;
+  } else if (item.html_blob_hash) {
+    const bytes = await fetchWebDavBlob(settings, blobsPath, 'html', item.html_blob_hash);
+    item.html_content = new TextDecoder().decode(bytes);
+  }
 
-    if (item.deleted_at === 0 && item.content) {
-      item.content_hash = computeSyncContentHash(item.content_type, item.content);
+  if (!item.preview.trim()) {
+    if (item.content_type === 'image') {
+      item.preview = '图片';
+    } else {
+      item.preview = item.content.slice(0, 160);
     }
   }
 
-  return items;
+  if (item.deleted_at === 0 && item.content) {
+    item.content_hash = computeSyncContentHash(item.content_type, item.content);
+  }
 }
 
 function isVisibleCloudItem(item: CloudSyncItem) {
@@ -1071,7 +1093,7 @@ async function fetchWebDavSnapshot(
           : [],
       };
 
-  await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
+  normalized.entries = await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
   return normalized;
 }
 
@@ -1104,7 +1126,7 @@ async function fetchWebDavOpsBatch(
           : [],
       };
 
-  await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
+  normalized.entries = await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
   return normalized;
 }
 
@@ -1360,6 +1382,26 @@ async function syncEntriesToWebDavIncrementally(
   });
   syncHead.updated_at = nowMs();
   await uploadWebDavSyncHead(settings, paths.headPath, syncHead);
+  await deleteOlderOwnOps(settings, paths.opsPath, deviceId, nextSeq).catch(() => {});
+}
+
+/**
+ * This phone's ops before `keepSeq`. Each push uploads a snapshot holding
+ * everything up to the op it just wrote, so the older ones are spent, and
+ * nothing else deletes them (the PC only tidies its own): they piled up, and
+ * every rebuild of the head lists the whole folder.
+ */
+async function deleteOlderOwnOps(settings: MobileSyncSettings, opsPath: string, deviceId: string, keepSeq: number) {
+  for (const ref of await listWebDavOpRefs(settings, opsPath)) {
+    if (ref.device_id !== deviceId || ref.seq >= keepSeq) continue;
+    const response = await fetch(
+      joinWebDavUrl(settings.webdavUrl, `${opsPath}/${webDavOpsFilename(deviceId, ref.seq)}`),
+      { method: 'DELETE', headers: buildAuthHeaders(settings) }
+    );
+    if (!response.ok && response.status !== 404) {
+      logWebDavDebug('DELETE old op failed', { seq: ref.seq, status: response.status });
+    }
+  }
 }
 
 async function pullRemoteWebDavOpsFromHead(
@@ -1377,8 +1419,10 @@ async function pullRemoteWebDavOpsFromHead(
     if (deviceId === localDeviceId || deviceHead.latest_op_seq <= 0) continue;
 
     let lastSeq = cursorMap[deviceId] ?? 0;
-    if (lastSeq === 0 && (deviceHead.snapshot_op_seq ?? 0) > 0) {
-      // PC 端可能已经清理了早期 ops，只保留 snapshot 之后的增量。
+    // The snapshot (pulled right after this) holds everything up to
+    // snapshot_op_seq, and the PC deletes those ops once it's uploaded:
+    // start after it, not only on the first pull.
+    if (lastSeq < (deviceHead.snapshot_op_seq ?? 0)) {
       lastSeq = deviceHead.snapshot_op_seq ?? 0;
       cursorMap[deviceId] = lastSeq;
       logWebDavDebug('Use snapshot_op_seq as incremental baseline', {
@@ -1390,12 +1434,25 @@ async function pullRemoteWebDavOpsFromHead(
     if (deviceHead.latest_op_seq <= lastSeq) continue;
 
     for (let seq = lastSeq + 1; seq <= deviceHead.latest_op_seq; seq += 1) {
-      const batch = await fetchWebDavOpsBatch(settings, paths.opsPath, paths.blobsPath, {
-        device_id: deviceId,
-        seq,
-      }).catch(() => null);
+      let batch: Awaited<ReturnType<typeof fetchWebDavOpsBatch>>;
+      try {
+        batch = await fetchWebDavOpsBatch(settings, paths.opsPath, paths.blobsPath, {
+          device_id: deviceId,
+          seq,
+        });
+      } catch {
+        // Not read this time (offline, server error): try again next pull.
+        break;
+      }
 
-      if (!batch || batch.device_id !== deviceId) {
+      if (!batch) {
+        // Gone: ops are temporary, as the PC treats them. Stopping here kept
+        // every later op from this device away until its next snapshot.
+        lastSeq = Math.max(lastSeq, seq);
+        cursorMap[deviceId] = lastSeq;
+        continue;
+      }
+      if (batch.device_id !== deviceId) {
         headStale = true;
         break;
       }
@@ -1565,10 +1622,12 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
     return [];
   }
 
-  const paths = await ensureWebDavDirectories(settings);
   const cachedItems = await loadWebDavPulledItems(settings);
 
   try {
+    // Inside the try: offline, this fails first, and the cached items below
+    // are what should show then.
+    const paths = await ensureWebDavDirectories(settings);
     let syncHead = await resolveWebDavSyncHead(settings, paths);
     const { headStale } = await pullRemoteWebDavOpsFromHead(settings, paths, syncHead);
 
@@ -1598,6 +1657,10 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
   }
 }
 
+// Off the PC's Wi-Fi a send waits for the system's network timeout (none on
+// Android's fetch), which held up the MQTT or WebDAV push behind it.
+const LAN_SEND_TIMEOUT_MS = 4000;
+
 export async function syncClipboardTextToPc(content: string) {
   const rawConnection = await loadStoredTransferConnection();
   if (!rawConnection?.trim()) {
@@ -1605,11 +1668,13 @@ export async function syncClipboardTextToPc(content: string) {
   }
 
   const connection = parseTransferConnection(rawConnection);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LAN_SEND_TIMEOUT_MS);
   const response = await sendTransferText(connection, {
     content,
     sender_id: 'mobile-home-sync',
     sender_name: '手机端',
-  });
+  }, controller.signal).finally(() => clearTimeout(timer));
 
   if (!response.ok) {
     const message = await response.text().catch(() => '');
@@ -1636,12 +1701,15 @@ export async function pushClipboardBatchToPc(entries: LocalClipboardEntry[]) {
     throw new Error('当前选择了 WebDAV 策略但尚未配置。请先在设置中填写 WebDAV 详细信息，或切换到 MQTT。');
   }
 
-  // 2. 本地局域网传输 (如果在线)
-  try {
-    for (const entry of entries) {
-      await syncClipboardTextToPc(entry.content).catch(() => {});
+  // 2. 本地局域网传输 (如果在线)：the first send that fails means the PC
+  // isn't reachable; trying each entry in turn only added waits.
+  for (const entry of entries) {
+    try {
+      await syncClipboardTextToPc(entry.content);
+    } catch {
+      break;
     }
-  } catch (e) {}
+  }
 
   // 3. 执行云同步
   if (isStrategyMqtt) {
