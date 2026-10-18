@@ -370,7 +370,12 @@ export default function ScannerScreen() {
     }
   };
 
+  // The camera reports a code in view many times a second: handle one at a
+  // time, or a wrong code stacked up error alerts.
+  const scanHandlingRef = useRef(false);
   const handleBarcodeScanned = async ({ data }: any) => {
+    if (scanHandlingRef.current) return;
+    scanHandlingRef.current = true;
     try {
       const normalized = String(data ?? '').trim();
       parseTransferConnection(normalized);
@@ -378,9 +383,12 @@ export default function ScannerScreen() {
       setIsScanning(false);
       setSavedDeviceIp(normalized);
       await saveStoredTransferConnection(normalized);
+      scanHandlingRef.current = false;
     } catch {
       triggerHaptic('error');
-      Alert.alert('二维码无效', '请扫描电脑上「局域网互传」的二维码。');
+      Alert.alert('二维码无效', '请扫描电脑上「局域网互传」的二维码。', [
+        { text: '好', onPress: () => { scanHandlingRef.current = false; } },
+      ], { onDismiss: () => { scanHandlingRef.current = false; } });
     }
   };
 
