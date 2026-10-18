@@ -1377,8 +1377,10 @@ async function pullRemoteWebDavOpsFromHead(
     if (deviceId === localDeviceId || deviceHead.latest_op_seq <= 0) continue;
 
     let lastSeq = cursorMap[deviceId] ?? 0;
-    if (lastSeq === 0 && (deviceHead.snapshot_op_seq ?? 0) > 0) {
-      // PC 端可能已经清理了早期 ops，只保留 snapshot 之后的增量。
+    // The snapshot (pulled right after this) holds everything up to
+    // snapshot_op_seq, and the PC deletes those ops once it's uploaded:
+    // start after it, not only on the first pull.
+    if (lastSeq < (deviceHead.snapshot_op_seq ?? 0)) {
       lastSeq = deviceHead.snapshot_op_seq ?? 0;
       cursorMap[deviceId] = lastSeq;
       logWebDavDebug('Use snapshot_op_seq as incremental baseline', {
@@ -1390,12 +1392,25 @@ async function pullRemoteWebDavOpsFromHead(
     if (deviceHead.latest_op_seq <= lastSeq) continue;
 
     for (let seq = lastSeq + 1; seq <= deviceHead.latest_op_seq; seq += 1) {
-      const batch = await fetchWebDavOpsBatch(settings, paths.opsPath, paths.blobsPath, {
-        device_id: deviceId,
-        seq,
-      }).catch(() => null);
+      let batch: Awaited<ReturnType<typeof fetchWebDavOpsBatch>>;
+      try {
+        batch = await fetchWebDavOpsBatch(settings, paths.opsPath, paths.blobsPath, {
+          device_id: deviceId,
+          seq,
+        });
+      } catch {
+        // Not read this time (offline, server error): try again next pull.
+        break;
+      }
 
-      if (!batch || batch.device_id !== deviceId) {
+      if (!batch) {
+        // Gone: ops are temporary, as the PC treats them. Stopping here kept
+        // every later op from this device away until its next snapshot.
+        lastSeq = Math.max(lastSeq, seq);
+        cursorMap[deviceId] = lastSeq;
+        continue;
+      }
+      if (batch.device_id !== deviceId) {
         headStale = true;
         break;
       }
