@@ -73,6 +73,9 @@ function imageFileExtensionFromUri(content: string) {
   return matched?.[1] || 'jpg';
 }
 
+/** The launch link (tile, shortcut) is handled once per app launch. */
+let initialLinkHandled = false;
+
 export default function HomeScreen({ navigation }: any) {
   const { colors } = useTheme();
   const { triggerHaptic } = useHaptics();
@@ -200,6 +203,11 @@ export default function HomeScreen({ navigation }: any) {
     }
   }, []);
 
+  // Read through a ref so switching modes doesn't make a new loadHomeData:
+  // the focus effect re-ran it on every switch (clipboard read, extra pulls).
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
   const loadHomeData = useCallback(async (withRefreshState = false) => {
     if (withRefreshState) setRefreshing(true);
     else setIsLoading(true);
@@ -217,7 +225,7 @@ export default function HomeScreen({ navigation }: any) {
       }
 
       // 如果当前已经是 pull 模式（比如从设置页返回），则需要顺带加载远程数据
-      if (mode === 'pull') {
+      if (modeRef.current === 'pull') {
         const entries = await fetchWebDavEntries(nextSettings)
           .then((entries) => buildWebDavDisplayRecord(entries, nextSettings.recentLimit))
           .catch(() => EMPTY_PULL_RECORD);
@@ -230,7 +238,7 @@ export default function HomeScreen({ navigation }: any) {
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [captureClipboardSnapshot, mode]);
+  }, [captureClipboardSnapshot]);
 
   // 当用户切换到拉取模式时，如果当前数据为空或需要更新，主动触发拉取
   useEffect(() => {
@@ -320,10 +328,14 @@ export default function HomeScreen({ navigation }: any) {
     // 监听运行中的打开
     const subscription = Linking.addEventListener('url', handleDeepLink);
 
-    // 检查是否是通过点击磁贴启动的应用
-    Linking.getInitialURL().then((url) => {
-      if (url) handleDeepLink({ url });
-    });
+    // 检查是否是通过点击磁贴启动的应用. Once per launch: getInitialURL keeps
+    // returning the launch link, and this effect runs again on re-renders.
+    if (!initialLinkHandled) {
+      initialLinkHandled = true;
+      Linking.getInitialURL().then((url) => {
+        if (url) handleDeepLink({ url });
+      });
+    }
 
     return () => {
       subscription.remove();
