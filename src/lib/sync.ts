@@ -345,8 +345,10 @@ function encodeBase64(input: string) {
   return output;
 }
 
+// Empty means the default folder, as on the PC: an empty field used to put
+// the phone's files at the server's root, where the PC never looks.
 function normalizeWebDavBasePath(raw: string) {
-  return raw.trim().replace(/^\/+|\/+$/g, '');
+  return raw.trim().replace(/^\/+|\/+$/g, '') || DEFAULT_SETTINGS.webdavBasePath;
 }
 
 function encodeRelativePath(relativePath: string) {
