@@ -1382,6 +1382,26 @@ async function syncEntriesToWebDavIncrementally(
   });
   syncHead.updated_at = nowMs();
   await uploadWebDavSyncHead(settings, paths.headPath, syncHead);
+  await deleteOlderOwnOps(settings, paths.opsPath, deviceId, nextSeq).catch(() => {});
+}
+
+/**
+ * This phone's ops before `keepSeq`. Each push uploads a snapshot holding
+ * everything up to the op it just wrote, so the older ones are spent, and
+ * nothing else deletes them (the PC only tidies its own): they piled up, and
+ * every rebuild of the head lists the whole folder.
+ */
+async function deleteOlderOwnOps(settings: MobileSyncSettings, opsPath: string, deviceId: string, keepSeq: number) {
+  for (const ref of await listWebDavOpRefs(settings, opsPath)) {
+    if (ref.device_id !== deviceId || ref.seq >= keepSeq) continue;
+    const response = await fetch(
+      joinWebDavUrl(settings.webdavUrl, `${opsPath}/${webDavOpsFilename(deviceId, ref.seq)}`),
+      { method: 'DELETE', headers: buildAuthHeaders(settings) }
+    );
+    if (!response.ok && response.status !== 404) {
+      logWebDavDebug('DELETE old op failed', { seq: ref.seq, status: response.status });
+    }
+  }
 }
 
 async function pullRemoteWebDavOpsFromHead(
