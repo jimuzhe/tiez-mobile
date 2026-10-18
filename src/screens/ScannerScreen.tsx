@@ -112,6 +112,11 @@ export default function ScannerScreen() {
   // The computer refuses this pairing: it restarted file transfer, which
   // makes a new one. Reconnecting can't help; scanning again does.
   const [pairingExpired, setPairingExpired] = useState(false);
+  // For the socket handlers, which keep the messages of when they were set up.
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const [deviceId, setDeviceId] = useState('');
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const { hapticLevel, triggerHaptic } = useHaptics();
@@ -222,6 +227,7 @@ export default function ScannerScreen() {
     if (!connection || !deviceId) return;
 
     let disposed = false;
+    let hasConnected = false;
     shouldReconnectRef.current = true;
     reconnectAttemptsRef.current = 0;
     setPairingExpired(false);
@@ -240,6 +246,25 @@ export default function ScannerScreen() {
       socket.onopen = () => {
         opened = true;
         reconnectAttemptsRef.current = 0;
+        if (hasConnected) {
+          // Back after a drop (app in the background, Wi-Fi gone): what the
+          // computer sent meanwhile never came over the socket. Fetch it.
+          const lastId = messagesRef.current.reduce(
+            (max, message) => (!message.isOptimistic && typeof message.id === 'number' ? Math.max(max, message.id) : max),
+            0
+          );
+          fetchTransferMessages(connection, lastId)
+            .then((missed: Message[]) => {
+              if (!Array.isArray(missed) || missed.length === 0) return;
+              setMessages((prev) => {
+                const known = new Set(prev.map((message) => message.id));
+                const added = missed.filter((message) => !known.has(message.id));
+                return added.length > 0 ? [...prev, ...added] : prev;
+              });
+            })
+            .catch(() => {});
+        }
+        hasConnected = true;
         socket.send(encodeSocketMessage(connection, {
           type: 'identity',
           device_id: deviceId,
