@@ -26,12 +26,22 @@ export function decodeSocketMessage(connection: TransferConnection, data: unknow
   return decodeJson(plain);
 }
 
+/** A request the computer answered with an error status (401: not paired any more). */
+export class TransferHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`History request failed with status ${status}`);
+    this.status = status;
+  }
+}
+
 export async function fetchTransferMessages(connection: TransferConnection, lastId = 0) {
   const path = connection.lanKey ? '/s/poll' : '/poll';
   const res = await fetch(buildTransferUrl(connection, `${path}?last_id=${lastId}`), {
     headers: buildTransferHeaders(connection),
   });
-  if (!res.ok) throw new Error(`History request failed with status ${res.status}`);
+  if (!res.ok) throw new TransferHttpError(res.status);
   if (!connection.lanKey) return res.json();
   const plain = openLan(connection.lanKey, 'poll', new Uint8Array(await res.arrayBuffer()));
   if (!plain) throw new Error('Unreadable history');
@@ -123,6 +133,20 @@ export async function downloadTransferFile(connection: TransferConnection, url: 
 }
 
 const mediaCache = new Map<string, Promise<string>>();
+
+/** A file message's name: the PC links files as /download/<token>?name=<name>. */
+export function transferFileName(content: string): string {
+  const index = content.indexOf('?name=');
+  if (index >= 0) {
+    const raw = content.slice(index + '?name='.length);
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return content.split('/').pop()?.split('?')[0] || content;
+}
 
 /**
  * Where <Image>/<VideoView> can load a message's picture or video: the URL

@@ -52,9 +52,11 @@ import {
   downloadTransferFile,
   encodeSocketMessage,
   fetchTransferMessages,
+  TransferHttpError,
   resolveTransferMedia,
   sendTransferText,
   uploadTransferChunk,
+  transferFileName,
 } from '../lib/transferApi';
 
 const { width } = Dimensions.get('window');
@@ -107,6 +109,14 @@ export default function ScannerScreen() {
   const [uploadProgress, setUploadProgress] = useState(0); // 0-1
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
+  // The computer refuses this pairing: it restarted file transfer, which
+  // makes a new one. Reconnecting can't help; scanning again does.
+  const [pairingExpired, setPairingExpired] = useState(false);
+  // For the socket handlers, which keep the messages of when they were set up.
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const [deviceId, setDeviceId] = useState('');
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const { hapticLevel, triggerHaptic } = useHaptics();
@@ -217,8 +227,10 @@ export default function ScannerScreen() {
     if (!connection || !deviceId) return;
 
     let disposed = false;
+    let hasConnected = false;
     shouldReconnectRef.current = true;
     reconnectAttemptsRef.current = 0;
+    setPairingExpired(false);
     setMessages([]);
     setHasLoadedHistory(false);
     setIsLoadingHistory(false);
@@ -230,8 +242,29 @@ export default function ScannerScreen() {
       if (connection.lanKey) socket.binaryType = 'arraybuffer';
       ws.current = socket;
 
+      let opened = false;
       socket.onopen = () => {
+        opened = true;
         reconnectAttemptsRef.current = 0;
+        if (hasConnected) {
+          // Back after a drop (app in the background, Wi-Fi gone): what the
+          // computer sent meanwhile never came over the socket. Fetch it.
+          const lastId = messagesRef.current.reduce(
+            (max, message) => (!message.isOptimistic && typeof message.id === 'number' ? Math.max(max, message.id) : max),
+            0
+          );
+          fetchTransferMessages(connection, lastId)
+            .then((missed: Message[]) => {
+              if (!Array.isArray(missed) || missed.length === 0) return;
+              setMessages((prev) => {
+                const known = new Set(prev.map((message) => message.id));
+                const added = missed.filter((message) => !known.has(message.id));
+                return added.length > 0 ? [...prev, ...added] : prev;
+              });
+            })
+            .catch(() => {});
+        }
+        hasConnected = true;
         socket.send(encodeSocketMessage(connection, {
           type: 'identity',
           device_id: deviceId,
@@ -243,6 +276,14 @@ export default function ScannerScreen() {
         try {
           const msg = decodeSocketMessage(connection, event.data);
           if (msg.type === 'devices_update') return;
+          // The computer cleared the chat: clear it here too.
+          if (msg.type === 'clear_history') {
+            setMessages([]);
+            return;
+          }
+          // Other notices aren't chat messages; listing one (it has no id)
+          // crashed the list.
+          if (msg.id === undefined || msg.id === null) return;
           setMessages(prev => {
             let filtered = prev.filter(m => !(m.isOptimistic && m.content === msg.content));
             if (
@@ -276,7 +317,25 @@ export default function ScannerScreen() {
         if (disposed || !shouldReconnectRef.current || ws.current !== socket) return;
         const attempt = reconnectAttemptsRef.current++;
         const delay = Math.min(MAX_RECONNECT_DELAY_MS, 750 * (2 ** Math.min(attempt, 5)));
-        reconnectTimeoutRef.current = setTimeout(connect, delay);
+        const retry = () => {
+          if (disposed || !shouldReconnectRef.current) return;
+          reconnectTimeoutRef.current = setTimeout(connect, delay);
+        };
+        if (opened) {
+          retry();
+          return;
+        }
+        // Never got in: ask why with a request that returns nothing new.
+        fetchTransferMessages(connection, Number.MAX_SAFE_INTEGER)
+          .then(retry)
+          .catch((error) => {
+            if (error instanceof TransferHttpError && (error.status === 401 || error.status === 403)) {
+              shouldReconnectRef.current = false;
+              setPairingExpired(true);
+            } else {
+              retry();
+            }
+          });
       };
     };
 
@@ -338,6 +397,9 @@ export default function ScannerScreen() {
       }
     } catch (e) {
       console.log('Fetch history failed', e);
+      if (e instanceof TransferHttpError && (e.status === 401 || e.status === 403)) {
+        setPairingExpired(true);
+      }
     } finally {
       setHasLoadedHistory(true);
       setIsLoadingHistory(false);
@@ -361,7 +423,12 @@ export default function ScannerScreen() {
     }
   };
 
+  // The camera reports a code in view many times a second: handle one at a
+  // time, or a wrong code stacked up error alerts.
+  const scanHandlingRef = useRef(false);
   const handleBarcodeScanned = async ({ data }: any) => {
+    if (scanHandlingRef.current) return;
+    scanHandlingRef.current = true;
     try {
       const normalized = String(data ?? '').trim();
       parseTransferConnection(normalized);
@@ -369,9 +436,12 @@ export default function ScannerScreen() {
       setIsScanning(false);
       setSavedDeviceIp(normalized);
       await saveStoredTransferConnection(normalized);
+      scanHandlingRef.current = false;
     } catch {
       triggerHaptic('error');
-      Alert.alert('二维码无效', '请扫描电脑上「局域网互传」的二维码。');
+      Alert.alert('二维码无效', '请扫描电脑上「局域网互传」的二维码。', [
+        { text: '好', onPress: () => { scanHandlingRef.current = false; } },
+      ], { onDismiss: () => { scanHandlingRef.current = false; } });
     }
   };
 
@@ -879,7 +949,7 @@ export default function ScannerScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Feather name={item.msg_type === 'image' ? 'image' : (item.msg_type === 'video' ? 'video' : 'file')} size={20} color={isMe ? colors.primaryText : colors.text} />
                   <Text style={[styles.fileName, isMe ? styles.myText : styles.otherText]} numberOfLines={1}>
-                    {item.msg_type === 'image' ? '图片文件' : (item.msg_type === 'video' ? '视频文件' : item.content.split('/').pop()?.split('?')[0])}
+                    {item.msg_type === 'image' ? '图片文件' : (item.msg_type === 'video' ? '视频文件' : transferFileName(item.content))}
                   </Text>
                 </View>
                 {showUploadBadge && (
@@ -907,6 +977,17 @@ export default function ScannerScreen() {
           <Text style={styles.headerTitle}>局域网互传</Text>
           <View style={{ width: 40 }} />
         </View>
+
+        {pairingExpired && (
+          <View style={{ margin: 16, padding: 14, borderRadius: 12, backgroundColor: colors.card, gap: 10 }}>
+            <Text style={{ color: colors.text, fontSize: 14, lineHeight: 20 }}>
+              连接已失效。电脑重新打开了「局域网互传」，请重新扫描电脑上的二维码。
+            </Text>
+            <TouchableOpacity onPress={clearConnection}>
+              <Text style={{ color: colors.primary, fontSize: 14, fontWeight: '600' }}>重新扫码</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={{ flex: 1, paddingBottom: (isKeyboardVisible || isPlusMenuOpen) ? 0 : 85 }}>
           <FlatList
