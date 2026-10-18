@@ -656,38 +656,52 @@ async function fetchWebDavBlob(settings: MobileSyncSettings, blobsPath: string, 
   return buffer;
 }
 
+/**
+ * Fills in blob contents. An item whose blob can't be read (missing, server
+ * error, another key) is left out instead of failing the pull: one used to
+ * hide the whole device's snapshot. The PC skips it the same way.
+ */
 async function enrichCloudItemsAfterPull(items: CloudSyncItem[], settings: MobileSyncSettings, blobsPath: string) {
+  const kept: CloudSyncItem[] = [];
   for (const item of items) {
-    if (item.content_blob_hash) {
-      const kind = item.content_type === 'image' ? 'image' : 'content';
-      const bytes = await fetchWebDavBlob(settings, blobsPath, kind, item.content_blob_hash);
-      item.content = item.content_type === 'image'
-        ? imageDataUrlFromBytes(bytes)
-        : new TextDecoder().decode(bytes);
+    try {
+      await enrichCloudItem(item, settings, blobsPath);
+      kept.push(item);
+    } catch (error) {
+      logWebDavDebug('Skipping an item whose blob failed to download', { error: String(error) });
     }
+  }
+  return kept;
+}
 
-    if (item.content_type === 'rich_text') {
-      item.html_content = null;
-      item.html_blob_hash = null;
-    } else if (item.html_blob_hash) {
-      const bytes = await fetchWebDavBlob(settings, blobsPath, 'html', item.html_blob_hash);
-      item.html_content = new TextDecoder().decode(bytes);
-    }
+async function enrichCloudItem(item: CloudSyncItem, settings: MobileSyncSettings, blobsPath: string) {
+  if (item.content_blob_hash) {
+    const kind = item.content_type === 'image' ? 'image' : 'content';
+    const bytes = await fetchWebDavBlob(settings, blobsPath, kind, item.content_blob_hash);
+    item.content = item.content_type === 'image'
+      ? imageDataUrlFromBytes(bytes)
+      : new TextDecoder().decode(bytes);
+  }
 
-    if (!item.preview.trim()) {
-      if (item.content_type === 'image') {
-        item.preview = '图片';
-      } else {
-        item.preview = item.content.slice(0, 160);
-      }
-    }
+  if (item.content_type === 'rich_text') {
+    item.html_content = null;
+    item.html_blob_hash = null;
+  } else if (item.html_blob_hash) {
+    const bytes = await fetchWebDavBlob(settings, blobsPath, 'html', item.html_blob_hash);
+    item.html_content = new TextDecoder().decode(bytes);
+  }
 
-    if (item.deleted_at === 0 && item.content) {
-      item.content_hash = computeSyncContentHash(item.content_type, item.content);
+  if (!item.preview.trim()) {
+    if (item.content_type === 'image') {
+      item.preview = '图片';
+    } else {
+      item.preview = item.content.slice(0, 160);
     }
   }
 
-  return items;
+  if (item.deleted_at === 0 && item.content) {
+    item.content_hash = computeSyncContentHash(item.content_type, item.content);
+  }
 }
 
 function isVisibleCloudItem(item: CloudSyncItem) {
@@ -1074,7 +1088,7 @@ async function fetchWebDavSnapshot(
           : [],
       };
 
-  await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
+  normalized.entries = await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
   return normalized;
 }
 
@@ -1107,7 +1121,7 @@ async function fetchWebDavOpsBatch(
           : [],
       };
 
-  await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
+  normalized.entries = await enrichCloudItemsAfterPull(normalized.entries, settings, blobsPath);
   return normalized;
 }
 
