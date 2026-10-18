@@ -243,6 +243,14 @@ export default function ScannerScreen() {
         try {
           const msg = decodeSocketMessage(connection, event.data);
           if (msg.type === 'devices_update') return;
+          // The computer cleared the chat: clear it here too.
+          if (msg.type === 'clear_history') {
+            setMessages([]);
+            return;
+          }
+          // Other notices aren't chat messages; listing one (it has no id)
+          // crashed the list.
+          if (msg.id === undefined || msg.id === null) return;
           setMessages(prev => {
             let filtered = prev.filter(m => !(m.isOptimistic && m.content === msg.content));
             if (
