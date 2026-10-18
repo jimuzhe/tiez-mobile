@@ -1,9 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import { parseLanKey } from './lanSealCore';
 
 export type TransferConnection = {
   baseUrl: string;
   accessToken: string | null;
+  /** From the pairing QR's #k= fragment; null for desktops without encryption. */
+  lanKey: Uint8Array | null;
 };
 
 const STORED_TRANSFER_CONNECTION_KEY = 'lastDeviceIp';
@@ -28,6 +31,7 @@ export function parseTransferConnection(rawValue: string): TransferConnection {
   return {
     baseUrl: `${parsed.protocol}//${parsed.host}`,
     accessToken: parsed.searchParams.get('auth')?.trim() || null,
+    lanKey: parseLanKey(new URLSearchParams(parsed.hash.slice(1)).get('k')),
   };
 }
 
@@ -36,13 +40,24 @@ export function buildTransferUrl(connection: TransferConnection, path: string): 
   return `${connection.baseUrl}${normalizedPath}`;
 }
 
+/**
+ * The token goes in an Authorization header (see openTransferSocket), never
+ * in the URL, where proxies and logs could keep it.
+ */
 export function buildTransferWebSocketUrl(connection: TransferConnection): string {
   const url = new URL(buildTransferUrl(connection, '/ws'));
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  if (connection.accessToken) {
-    url.searchParams.set('auth', connection.accessToken);
-  }
+  // Every frame is a sealed box (docs/LAN-TRANSFER-ENCRYPTION.md).
+  if (connection.lanKey) url.searchParams.set('s', '1');
   return url.toString();
+}
+
+/** React Native's WebSocket takes headers as a third argument. */
+type HeaderedWebSocket = new (url: string, protocols?: string | string[] | null, options?: { headers: Record<string, string> }) => WebSocket;
+
+export function openTransferSocket(connection: TransferConnection): WebSocket {
+  const Socket = WebSocket as unknown as HeaderedWebSocket;
+  return new Socket(buildTransferWebSocketUrl(connection), null, { headers: buildTransferHeaders(connection) });
 }
 
 export function buildTransferHeaders(

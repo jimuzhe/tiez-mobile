@@ -1,11 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import {
-  buildTransferHeaders,
-  buildTransferUrl,
   loadStoredTransferConnection,
   parseTransferConnection,
 } from './transferConnection';
+import { sendTransferText } from './transferApi';
 
 export type RecentLimit = number;
 export type PushStrategy = 'mqtt' | 'webdav';
@@ -25,12 +24,15 @@ export type MobileSyncSettings = {
   mqttProtocol: MqttProtocol;
   mqttWsPath: string;
   mqttTlsInsecure: boolean;
+  /** Shared end-to-end key (base64url); "" = encryption off. See lib/e2eCore.ts. */
+  e2eKey: string;
   autoPushOnLaunch: boolean;
   pushStrategy: PushStrategy;
   recentLimit: RecentLimit;
 };
 
 import { publishToMqtt, publishBatchToMqtt } from './mqtt_client';
+import { type E2eKind, isSealed, openBox, parseE2eKey, seal } from './e2e';
 
 export type SyncedEntry = {
   id: string;
@@ -128,6 +130,7 @@ export const STORAGE_KEYS = {
   mqttProtocol: 'mobile.sync_mqtt_protocol',
   mqttWsPath: 'mobile.sync_mqtt_ws_path',
   mqttTlsInsecure: 'mobile.sync_mqtt_tls_insecure',
+  e2eKey: 'mobile.e2e_key',
   autoPushOnLaunch: 'mobile.auto_push_on_launch',
   pushStrategy: 'mobile.push_strategy',
   recentLimit: 'mobile.home_recent_limit',
@@ -141,7 +144,6 @@ export const STORAGE_KEYS = {
 } as const;
 
 const LOCAL_SYNC_CACHE_KEYS = [
-  STORAGE_KEYS.webdavLocalSeq,
   STORAGE_KEYS.webdavOpCursorMap,
   STORAGE_KEYS.webdavLocalIndex,
   STORAGE_KEYS.webdavLocalItems,
@@ -162,6 +164,7 @@ const DEFAULT_SETTINGS: MobileSyncSettings = {
   mqttProtocol: 'wss://',
   mqttWsPath: '/mqtt',
   mqttTlsInsecure: false,
+  e2eKey: '',
   autoPushOnLaunch: false,
   pushStrategy: 'mqtt',
   recentLimit: 10,
@@ -183,6 +186,7 @@ const SENSITIVE_SETTING_KEYS = [
   STORAGE_KEYS.webdavPassword,
   STORAGE_KEYS.mqttUsername,
   STORAGE_KEYS.mqttPassword,
+  STORAGE_KEYS.e2eKey,
 ] as const;
 
 async function isSecureStoreAvailable() {
@@ -247,13 +251,53 @@ export function formatCacheSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export async function getLocalSyncCacheSize() {
-  const pairs = await AsyncStorage.multiGet([...LOCAL_SYNC_CACHE_KEYS]);
+export function getWebDavSyncSpaceKey(
+  settings?: Pick<MobileSyncSettings, 'webdavUrl' | 'webdavUsername' | 'webdavBasePath'> | null
+): string {
+  if (!settings) return 'default';
+  const url = (settings.webdavUrl || '').trim().toLowerCase().replace(/\/+$/, '');
+  const username = (settings.webdavUsername || '').trim().toLowerCase();
+  const basePath = normalizeWebDavBasePath(settings.webdavBasePath || '');
+  if (!url) return 'default';
+
+  let hash = 0;
+  const raw = `${url}::${username}::${basePath}`;
+  for (let i = 0; i < raw.length; i++) {
+    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+    hash |= 0;
+  }
+  const safePrefix = url.replace(/[^a-z0-9]/gi, '_').slice(0, 24);
+  return `${safePrefix}_${(hash >>> 0).toString(36)}`;
+}
+
+function getScopedStorageKey(baseKey: string, spaceKey: string): string {
+  return `${baseKey}.${spaceKey}`;
+}
+
+export async function getLocalSyncCacheSize(settings?: MobileSyncSettings) {
+  const currentSettings = settings || await loadMobileSyncSettings().catch(() => null);
+  const spaceKey = getWebDavSyncSpaceKey(currentSettings);
+  const scopedKeys = [
+    getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey),
+  ];
+  const allKeys = Array.from(new Set([...LOCAL_SYNC_CACHE_KEYS, ...scopedKeys]));
+  const pairs = await AsyncStorage.multiGet(allKeys);
   return pairs.reduce((total, [, value]) => total + estimateStorageBytes(value), 0);
 }
 
-export async function clearLocalSyncCache() {
-  await AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS]);
+export async function clearLocalSyncCache(settings?: MobileSyncSettings) {
+  const currentSettings = settings || await loadMobileSyncSettings().catch(() => null);
+  const spaceKey = getWebDavSyncSpaceKey(currentSettings);
+  const scopedKeys = [
+    getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey),
+    getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey),
+  ];
+  await AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS, ...scopedKeys]);
 }
 
 function truncateLogText(value: string, limit = 240) {
@@ -597,7 +641,10 @@ async function fetchWebDavBlob(settings: MobileSyncSettings, blobsPath: string, 
     throw new Error(`WebDAV blob 读取失败：${response.status}${text ? ` ${text}` : ''}`);
   }
 
-  const buffer = new Uint8Array(await response.arrayBuffer());
+  const buffer = openDownloaded(settings, 'blob', new Uint8Array(await response.arrayBuffer()));
+  if (!buffer) {
+    throw new Error('WebDAV blob 无法用本机的端到端密钥读取');
+  }
   logWebDavDebug('BLOB success', {
     url,
     status: response.status,
@@ -719,53 +766,104 @@ async function getMobileWebDavDeviceId() {
   return generated;
 }
 
-async function loadLocalWebDavSeq() {
-  const raw = await AsyncStorage.getItem(STORAGE_KEYS.webdavLocalSeq);
-  return raw ? Number(raw) || 0 : 0;
+async function loadLocalWebDavSeq(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalSeq, spaceKey);
+  const raw = await AsyncStorage.getItem(scopedKey);
+  if (raw !== null) {
+    return Number(raw) || 0;
+  }
+  if (spaceKey === 'default') {
+    const legacy = await AsyncStorage.getItem(STORAGE_KEYS.webdavLocalSeq);
+    return legacy ? Number(legacy) || 0 : 0;
+  }
+  return 0;
 }
 
-async function saveLocalWebDavSeq(seq: number) {
-  await AsyncStorage.setItem(STORAGE_KEYS.webdavLocalSeq, String(seq));
+async function saveLocalWebDavSeq(seq: number, settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalSeq, spaceKey);
+  await AsyncStorage.setItem(scopedKey, String(seq));
 }
 
-async function loadWebDavOpCursorMap() {
-  return loadJsonStorage<Record<string, number>>(STORAGE_KEYS.webdavOpCursorMap, {});
+async function loadWebDavOpCursorMap(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey);
+  const raw = await AsyncStorage.getItem(scopedKey);
+  if (raw) {
+    try {
+      return JSON.parse(raw) as Record<string, number>;
+    } catch {}
+  }
+  if (spaceKey === 'default') {
+    return loadJsonStorage<Record<string, number>>(STORAGE_KEYS.webdavOpCursorMap, {});
+  }
+  return {};
 }
 
-async function saveWebDavOpCursorMap(map: Record<string, number>) {
-  await saveJsonStorage(STORAGE_KEYS.webdavOpCursorMap, map);
+async function saveWebDavOpCursorMap(map: Record<string, number>, settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavOpCursorMap, spaceKey);
+  await saveJsonStorage(scopedKey, map);
 }
 
-async function loadWebDavLocalIndex() {
-  return loadJsonStorage<Record<string, string>>(STORAGE_KEYS.webdavLocalIndex, {});
+async function loadWebDavLocalIndex(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey);
+  const raw = await AsyncStorage.getItem(scopedKey);
+  if (raw) {
+    try {
+      return JSON.parse(raw) as Record<string, string>;
+    } catch {}
+  }
+  if (spaceKey === 'default') {
+    return loadJsonStorage<Record<string, string>>(STORAGE_KEYS.webdavLocalIndex, {});
+  }
+  return {};
 }
 
-async function saveWebDavLocalIndex(index: Record<string, string>) {
-  await saveJsonStorage(STORAGE_KEYS.webdavLocalIndex, index);
+async function saveWebDavLocalIndex(index: Record<string, string>, settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalIndex, spaceKey);
+  await saveJsonStorage(scopedKey, index);
 }
 
-async function loadWebDavLocalItems() {
-  const rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavLocalItems, []);
-  return rawItems.map((item) => normalizeCloudItem(item)).slice(0, MAX_LOCAL_SYNC_ITEMS);
+async function loadWebDavLocalItems(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey);
+  let rawItems = await loadJsonStorage<CloudSyncItem[] | null>(scopedKey, null);
+  if (!rawItems && spaceKey === 'default') {
+    rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavLocalItems, []);
+  }
+  return (rawItems || []).map((item) => normalizeCloudItem(item)).slice(0, MAX_LOCAL_SYNC_ITEMS);
 }
 
-async function saveWebDavLocalItems(items: CloudSyncItem[]) {
+async function saveWebDavLocalItems(items: CloudSyncItem[], settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey);
   await saveJsonStorage(
-    STORAGE_KEYS.webdavLocalItems,
+    scopedKey,
     sortCloudItemsDesc(items)
       .slice(0, MAX_LOCAL_SYNC_ITEMS)
       .map((item) => compactCloudItemForCache(item))
   );
 }
 
-async function loadWebDavPulledItems() {
-  const rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavPulledItems, []);
-  return rawItems.map((item) => normalizeCloudItem(item)).slice(0, MAX_REMOTE_SYNC_ITEMS);
+async function loadWebDavPulledItems(settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey);
+  let rawItems = await loadJsonStorage<CloudSyncItem[] | null>(scopedKey, null);
+  if (!rawItems && spaceKey === 'default') {
+    rawItems = await loadJsonStorage<CloudSyncItem[]>(STORAGE_KEYS.webdavPulledItems, []);
+  }
+  return (rawItems || []).map((item) => normalizeCloudItem(item)).slice(0, MAX_REMOTE_SYNC_ITEMS);
 }
 
-async function saveWebDavPulledItems(items: CloudSyncItem[]) {
+async function saveWebDavPulledItems(items: CloudSyncItem[], settings?: MobileSyncSettings) {
+  const spaceKey = getWebDavSyncSpaceKey(settings);
+  const scopedKey = getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey);
   await saveJsonStorage(
-    STORAGE_KEYS.webdavPulledItems,
+    scopedKey,
     sortCloudItemsDesc(items)
       .slice(0, MAX_REMOTE_SYNC_ITEMS)
       .map((item) => compactCloudItemForCache(item))
@@ -843,7 +941,38 @@ async function listWebDavCollection(settings: MobileSyncSettings, relativePath: 
   return text;
 }
 
-async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: string) {
+/** Set when a file was skipped because its encryption doesn't match ours. */
+let e2eMismatchSeen = false;
+
+let e2eMismatchListener: (() => void) | null = null;
+
+/** Called after a sync that had to skip files (see openDownloaded). */
+export function setE2eMismatchListener(listener: (() => void) | null) {
+  e2eMismatchListener = listener;
+}
+
+function reportE2eMismatch() {
+  if (!e2eMismatchSeen) return;
+  e2eMismatchSeen = false;
+  e2eMismatchListener?.();
+}
+
+/**
+ * A downloaded sync file's bytes, opened if sealed (docs/E2E-ENCRYPTION.md).
+ * Null when this device can't use it: plaintext while a key is set, sealed
+ * without one, or sealed with another key. Such files are skipped.
+ */
+function openDownloaded(settings: MobileSyncSettings, kind: E2eKind, bytes: Uint8Array): Uint8Array | null {
+  const keys = parseE2eKey(settings.e2eKey);
+  const sealed = isSealed(bytes);
+  if (!keys && !sealed) return bytes;
+  const opened = keys && sealed ? openBox(keys, kind, bytes) : null;
+  if (!opened) e2eMismatchSeen = true;
+  return opened;
+}
+
+/** `e2eKind` seals/opens the file when a key is set; omit it for the sync head. */
+async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: string, e2eKind?: E2eKind) {
   const url = joinWebDavUrl(settings.webdavUrl, relativePath);
   logWebDavDebug('GET request', { url, relativePath });
   const response = await fetch(url, {
@@ -865,7 +994,17 @@ async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: st
     throw new Error(`WebDAV 读取失败：${response.status}${text ? ` ${text}` : ''}`);
   }
 
-  const text = await response.text();
+  let text: string;
+  if (e2eKind) {
+    const opened = openDownloaded(settings, e2eKind, new Uint8Array(await response.arrayBuffer()));
+    if (!opened) {
+      logWebDavDebug('GET skipped (end-to-end mismatch)', { url });
+      return null;
+    }
+    text = new TextDecoder().decode(opened);
+  } else {
+    text = await response.text();
+  }
   logWebDavDebug('GET success', {
     url,
     status: response.status,
@@ -874,7 +1013,7 @@ async function fetchWebDavJson<T>(settings: MobileSyncSettings, relativePath: st
   return JSON.parse(text) as T;
 }
 
-async function putWebDavJson(settings: MobileSyncSettings, relativePath: string, payload: unknown) {
+async function putWebDavJson(settings: MobileSyncSettings, relativePath: string, payload: unknown, e2eKind?: E2eKind) {
   const url = joinWebDavUrl(settings.webdavUrl, relativePath);
   logWebDavDebug('PUT request', {
     url,
@@ -886,7 +1025,7 @@ async function putWebDavJson(settings: MobileSyncSettings, relativePath: string,
     headers: buildAuthHeaders(settings, {
       'Content-Type': 'application/json',
     }),
-    body: JSON.stringify(payload),
+    body: sealedBody(settings, e2eKind, JSON.stringify(payload)),
   });
 
   if (!response.ok) {
@@ -902,6 +1041,11 @@ async function putWebDavJson(settings: MobileSyncSettings, relativePath: string,
   logWebDavDebug('PUT success', { url, status: response.status });
 }
 
+function sealedBody(settings: MobileSyncSettings, e2eKind: E2eKind | undefined, json: string) {
+  const keys = e2eKind ? parseE2eKey(settings.e2eKey) : null;
+  return keys && e2eKind ? seal(keys, e2eKind, new TextEncoder().encode(json)) : json;
+}
+
 async function listWebDavSnapshotIds(settings: MobileSyncSettings, devicesPath: string) {
   return parseSnapshotIds(await listWebDavCollection(settings, devicesPath));
 }
@@ -914,7 +1058,8 @@ async function fetchWebDavSnapshot(
 ) {
   const snapshot = await fetchWebDavJson<WebDavDeviceSnapshot>(
     settings,
-    `${devicesPath}/${deviceId}.json`
+    `${devicesPath}/${deviceId}.json`,
+    'snapshot'
   );
   if (!snapshot) return null;
 
@@ -946,7 +1091,8 @@ async function fetchWebDavOpsBatch(
 ) {
   const batch = await fetchWebDavJson<WebDavOpsBatch>(
     settings,
-    `${opsPath}/${webDavOpsFilename(opRef.device_id, opRef.seq)}`
+    `${opsPath}/${webDavOpsFilename(opRef.device_id, opRef.seq)}`,
+    'ops'
   );
 
   if (!batch) return null;
@@ -1065,7 +1211,7 @@ async function uploadWebDavOpsBatch(
     entries,
   };
 
-  await putWebDavJson(settings, `${opsPath}/${webDavOpsFilename(deviceId, seq)}`, batch);
+  await putWebDavJson(settings, `${opsPath}/${webDavOpsFilename(deviceId, seq)}`, batch, 'ops');
 }
 
 async function uploadWebDavSnapshot(
@@ -1082,7 +1228,7 @@ async function uploadWebDavSnapshot(
     entries,
   };
 
-  await putWebDavJson(settings, `${devicesPath}/${deviceId}.json`, snapshot);
+  await putWebDavJson(settings, `${devicesPath}/${deviceId}.json`, snapshot, 'snapshot');
 }
 
 function updateWebDavHeadDevice(
@@ -1159,9 +1305,9 @@ function localEntryToCloudItem(entry: LocalClipboardEntry): CloudSyncItem {
   });
 }
 
-async function collectLocalIncrementalItems(localItems: CloudSyncItem[]) {
+async function collectLocalIncrementalItems(localItems: CloudSyncItem[], settings?: MobileSyncSettings) {
   const collapsed = collapseItemsBySyncKey(localItems);
-  const previousIndex = await loadWebDavLocalIndex();
+  const previousIndex = await loadWebDavLocalIndex(settings);
   const nextIndex: Record<string, string> = {};
   const deltas: CloudSyncItem[] = [];
 
@@ -1186,20 +1332,25 @@ async function syncEntriesToWebDavIncrementally(
   const deviceId = await getMobileWebDavDeviceId();
   const paths = await ensureWebDavDirectories(settings);
   const syncHead = await resolveWebDavSyncHead(settings, paths);
-  const existingLocalItems = await loadWebDavLocalItems();
+  const existingLocalItems = await loadWebDavLocalItems(settings);
   const incomingLocalItems = entries.map((entry) => localEntryToCloudItem(entry));
   const nextLocalItems = mergeCloudItems(existingLocalItems, incomingLocalItems, MAX_LOCAL_SYNC_ITEMS);
-  const { deltas, nextIndex, collapsedItems } = await collectLocalIncrementalItems(nextLocalItems);
+  const { deltas, nextIndex, collapsedItems } = await collectLocalIncrementalItems(nextLocalItems, settings);
 
-  let nextSeq = await loadLocalWebDavSeq();
+  // The remote head is authoritative: a fresh or migrated local counter must never
+  // reuse a sequence number and overwrite this device's existing ops files.
+  let nextSeq = Math.max(
+    await loadLocalWebDavSeq(settings),
+    syncHead.devices[deviceId]?.latest_op_seq ?? 0
+  );
   if (deltas.length > 0) {
     nextSeq += 1;
     await uploadWebDavOpsBatch(settings, paths.opsPath, deviceId, nextSeq, deltas);
-    await saveLocalWebDavSeq(nextSeq);
+    await saveLocalWebDavSeq(nextSeq, settings);
   }
 
-  await saveWebDavLocalItems(nextLocalItems);
-  await saveWebDavLocalIndex(nextIndex);
+  await saveWebDavLocalItems(nextLocalItems, settings);
+  await saveWebDavLocalIndex(nextIndex, settings);
   await uploadWebDavSnapshot(settings, paths.devicesPath, deviceId, nextSeq, collapsedItems);
 
   updateWebDavHeadDevice(syncHead, deviceId, (device) => {
@@ -1217,8 +1368,8 @@ async function pullRemoteWebDavOpsFromHead(
   head: WebDavSyncHead
 ) {
   const localDeviceId = await getMobileWebDavDeviceId();
-  const cursorMap = await loadWebDavOpCursorMap();
-  const existingRemoteItems = await loadWebDavPulledItems();
+  const cursorMap = await loadWebDavOpCursorMap(settings);
+  const existingRemoteItems = await loadWebDavPulledItems(settings);
   let nextRemoteItems = existingRemoteItems;
   let headStale = false;
 
@@ -1255,8 +1406,8 @@ async function pullRemoteWebDavOpsFromHead(
     }
   }
 
-  await saveWebDavOpCursorMap(cursorMap);
-  await saveWebDavPulledItems(nextRemoteItems);
+  await saveWebDavOpCursorMap(cursorMap, settings);
+  await saveWebDavPulledItems(nextRemoteItems, settings);
   return { headStale, items: nextRemoteItems };
 }
 
@@ -1266,7 +1417,7 @@ async function pullRemoteWebDavSnapshotsFromHead(
   head: WebDavSyncHead
 ) {
   const localDeviceId = await getMobileWebDavDeviceId();
-  let nextRemoteItems = await loadWebDavPulledItems();
+  let nextRemoteItems = await loadWebDavPulledItems(settings);
 
   const remoteDeviceIds = Object.entries(head.devices)
     .filter(([deviceId, deviceHead]) => deviceId !== localDeviceId && deviceHead.snapshot_updated_at > 0)
@@ -1279,7 +1430,7 @@ async function pullRemoteWebDavSnapshotsFromHead(
     nextRemoteItems = mergeCloudItems(nextRemoteItems, snapshot.entries, MAX_REMOTE_SYNC_ITEMS);
   }
 
-  await saveWebDavPulledItems(nextRemoteItems);
+  await saveWebDavPulledItems(nextRemoteItems, settings);
   return nextRemoteItems;
 }
 
@@ -1299,6 +1450,7 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     mqttProtocol,
     mqttWsPath,
     mqttTlsInsecure,
+    e2eKey,
     autoPushOnLaunch,
     pushStrategy,
   ] = await Promise.all([
@@ -1316,6 +1468,7 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     AsyncStorage.getItem(STORAGE_KEYS.mqttProtocol),
     AsyncStorage.getItem(STORAGE_KEYS.mqttWsPath),
     AsyncStorage.getItem(STORAGE_KEYS.mqttTlsInsecure),
+    loadSensitiveSetting(STORAGE_KEYS.e2eKey),
     AsyncStorage.getItem(STORAGE_KEYS.autoPushOnLaunch),
     AsyncStorage.getItem(STORAGE_KEYS.pushStrategy),
   ]);
@@ -1337,6 +1490,7 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
     mqttProtocol: (mqttProtocol as MqttProtocol) ?? DEFAULT_SETTINGS.mqttProtocol,
     mqttWsPath: mqttWsPath ?? DEFAULT_SETTINGS.mqttWsPath,
     mqttTlsInsecure: mqttTlsInsecure === 'true',
+    e2eKey: e2eKey ?? DEFAULT_SETTINGS.e2eKey,
     autoPushOnLaunch: autoPushOnLaunch === 'true',
     pushStrategy: (pushStrategy as PushStrategy) ?? DEFAULT_SETTINGS.pushStrategy,
   };
@@ -1362,6 +1516,7 @@ export async function saveMobileSyncSettings(settings: MobileSyncSettings) {
     saveSensitiveSetting(STORAGE_KEYS.webdavPassword, settings.webdavPassword),
     saveSensitiveSetting(STORAGE_KEYS.mqttUsername, settings.mqttUsername.trim()),
     saveSensitiveSetting(STORAGE_KEYS.mqttPassword, settings.mqttPassword),
+    saveSensitiveSetting(STORAGE_KEYS.e2eKey, settings.e2eKey.trim()),
   ]);
 }
 
@@ -1411,7 +1566,7 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
   }
 
   const paths = await ensureWebDavDirectories(settings);
-  const cachedItems = await loadWebDavPulledItems();
+  const cachedItems = await loadWebDavPulledItems(settings);
 
   try {
     let syncHead = await resolveWebDavSyncHead(settings, paths);
@@ -1424,6 +1579,7 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
     }
 
     const pulledItems = await pullRemoteWebDavSnapshotsFromHead(settings, paths, syncHead);
+    reportE2eMismatch();
     return dedupeEntries(
       pulledItems
         .filter((item) => isVisibleCloudItem(item))
@@ -1445,18 +1601,14 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
 export async function syncClipboardTextToPc(content: string) {
   const rawConnection = await loadStoredTransferConnection();
   if (!rawConnection?.trim()) {
-    throw new Error('请先在文件传输页扫码连接电脑');
+    throw new Error('请先在「互传」页扫码连接电脑');
   }
 
   const connection = parseTransferConnection(rawConnection);
-  const response = await fetch(buildTransferUrl(connection, '/send_text'), {
-    method: 'POST',
-    headers: buildTransferHeaders(connection, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      content,
-      sender_id: 'mobile-home-sync',
-      sender_name: '手机端',
-    }),
+  const response = await sendTransferText(connection, {
+    content,
+    sender_id: 'mobile-home-sync',
+    sender_name: '手机端',
   });
 
   if (!response.ok) {

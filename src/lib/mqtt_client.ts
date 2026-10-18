@@ -1,5 +1,13 @@
 import mqtt from 'mqtt';
 import type { MobileSyncSettings } from './sync';
+import { parseE2eKey, sealMqttMessage } from './e2e';
+
+/** The message the desktop expects; sealed when an end-to-end key is set. */
+function buildPayload(content: string, settings: MobileSyncSettings) {
+  const message = { msg: content, sender: 'mobile', timestamp: Date.now() };
+  const keys = parseE2eKey(settings.e2eKey);
+  return keys ? sealMqttMessage(keys, message) : JSON.stringify(message);
+}
 
 export async function publishToMqtt(content: string, settings: MobileSyncSettings) {
   const {
@@ -40,11 +48,7 @@ export async function publishToMqtt(content: string, settings: MobileSyncSetting
     }, 12000);
 
     client.on('connect', () => {
-      const payload = JSON.stringify({
-        msg: content,
-        sender: 'mobile',
-        timestamp: Date.now(),
-      });
+      const payload = buildPayload(content, settings);
 
       client.publish(mqttTopic, payload, { qos: 1 }, (err) => {
         clearTimeout(timeout);
@@ -115,11 +119,7 @@ export async function publishBatchToMqtt(contents: string[], settings: MobileSyn
           return;
         }
 
-        const payload = JSON.stringify({
-          msg: contents[sentCount],
-          sender: 'mobile',
-          timestamp: Date.now(),
-        });
+        const payload = buildPayload(contents[sentCount], settings);
 
         client.publish(mqttTopic, payload, { qos: 1 }, (err) => {
           if (err) {

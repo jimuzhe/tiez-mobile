@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -35,6 +35,7 @@ import {
   type RecentLimit,
 } from '../lib/sync';
 import { applyConfigQrToSettings, parseTiezConfigQr } from '../lib/configQr';
+import { parseE2eKey } from '../lib/e2e';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { checkUpdate, RELEASE_CHANNEL } from '../lib/updateChecker';
@@ -56,6 +57,14 @@ export default function SettingsScreen() {
   const [isWebDAVExpanded, setIsWebDAVExpanded] = useState(false);
   const [isMQTTExpanded, setIsMQTTExpanded] = useState(false);
   const [isHapticExpanded, setIsHapticExpanded] = useState(false);
+  const [isE2eExpanded, setIsE2eExpanded] = useState(false);
+  // Encryption is not offered to new setups; a phone that already has a key
+  // still sees it, so it can be turned off.
+  const [hasSavedE2eKey, setHasSavedE2eKey] = useState(false);
+  const e2eFingerprint = useMemo(
+    () => parseE2eKey(syncSettings?.e2eKey)?.fingerprint ?? null,
+    [syncSettings?.e2eKey]
+  );
   const [isAboutVisible, setIsAboutVisible] = useState(false);
   const [shouldRenderAbout, setShouldRenderAbout] = useState(false);
   const [localCacheSizeLabel, setLocalCacheSizeLabel] = useState('0 B');
@@ -87,6 +96,12 @@ export default function SettingsScreen() {
     if (!isWebDAVExpanded) setIsMQTTExpanded(false);
   };
 
+  const toggleE2e = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    triggerHaptic();
+    setIsE2eExpanded(!isE2eExpanded);
+  };
+
   const toggleHapticRow = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     triggerHaptic();
@@ -94,7 +109,10 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => {
-    loadMobileSyncSettings().then(setSyncSettings);
+    loadMobileSyncSettings().then((settings) => {
+      setSyncSettings(settings);
+      setHasSavedE2eKey(!!settings.e2eKey);
+    });
     refreshLocalCacheSize().catch(() => {});
   }, []);
 
@@ -169,6 +187,10 @@ export default function SettingsScreen() {
   const saveCurrentSyncSettings = async () => {
     if (!syncSettings) return;
     triggerHaptic();
+    if (syncSettings.e2eKey.trim() && !parseE2eKey(syncSettings.e2eKey)) {
+      Alert.alert('密钥无效', '端到端加密密钥不正确，请重新扫码或从电脑端复制。');
+      return;
+    }
     await persistSyncSettings(syncSettings);
     Alert.alert('已保存', '同步配置已经更新');
   };
@@ -486,8 +508,8 @@ export default function SettingsScreen() {
               <Feather name="send" size={18} color={colors.text} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={dynamicStyles.rowText}>推送实现策略</Text>
-              <Text style={{ color: colors.primary, fontSize: 11, fontWeight: '600' }}>MQTT 体验更好、更快速</Text>
+              <Text style={dynamicStyles.rowText}>推送方式</Text>
+              <Text style={{ color: colors.subText, fontSize: 11 }}>MQTT 更快</Text>
             </View>
             <View style={dynamicStyles.segmentedControl}>
               {(['mqtt', 'webdav'] as const).map((strategy) => (
@@ -511,7 +533,7 @@ export default function SettingsScreen() {
 
           <TouchableOpacity style={[styles.row, { paddingVertical: 18 }]} activeOpacity={0.7} onPress={toggleMQTT}>
             <View style={dynamicStyles.iconBox}>
-              <Feather name="zap" size={18} color={colors.text} />
+              <Feather name="radio" size={18} color={colors.text} />
             </View>
             <Text style={dynamicStyles.rowText}>MQTT 推送配置</Text>
             <Text style={[dynamicStyles.valueText, { marginRight: 8, fontSize: 13 }]}>{isMQTTExpanded ? '收起' : '修改'}</Text>
@@ -646,6 +668,42 @@ export default function SettingsScreen() {
             </View>
           )}
           <View style={dynamicStyles.divider} />
+
+          {hasSavedE2eKey && (
+            <>
+              <TouchableOpacity style={[styles.row, { paddingVertical: 18 }]} activeOpacity={0.7} onPress={toggleE2e}>
+                <View style={dynamicStyles.iconBox}>
+                  <Feather name="lock" size={18} color={colors.text} />
+                </View>
+                <Text style={dynamicStyles.rowText}>端到端加密</Text>
+                <Text style={[dynamicStyles.valueText, { marginRight: 8, fontSize: 13 }]}>{e2eFingerprint ?? '未开启'}</Text>
+                <Feather name={isE2eExpanded ? "chevron-up" : "chevron-down"} size={18} color={colors.subText} />
+              </TouchableOpacity>
+              {isE2eExpanded && (
+                <View style={[styles.row, styles.blockRow, { paddingTop: 0, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider }]}>
+                  <View style={{ height: 16 }} />
+                  <Text style={{ color: colors.subText, fontSize: 12, lineHeight: 18, marginBottom: 10 }}>
+                    开启后，推送到电脑的内容和 WebDAV 同步文件会先在手机上加密，服务器只能看到密文。密钥必须和电脑端一致：扫描电脑端的配置二维码会自动导入，也可以把电脑上显示的密钥粘贴到这里。
+                  </Text>
+                  <Text style={dynamicStyles.formLabel}>密钥</Text>
+                  <TextInput value={syncSettings?.e2eKey ?? ''} onChangeText={(text) => updateSyncField('e2eKey', text.trim())} placeholder="留空表示不加密" placeholderTextColor={colors.subText} style={dynamicStyles.input} secureTextEntry autoCapitalize="none" autoCorrect={false} />
+                  {!!syncSettings?.e2eKey && !e2eFingerprint && (
+                    <Text style={{ color: '#dc2626', fontSize: 12, lineHeight: 18, marginBottom: 10 }}>这不是有效的密钥。</Text>
+                  )}
+                  {!!e2eFingerprint && (
+                    <Text style={{ color: colors.subText, fontSize: 12, lineHeight: 18, marginBottom: 10 }}>
+                      密钥指纹 {e2eFingerprint}，应和电脑端「端到端加密」里显示的一致。
+                    </Text>
+                  )}
+                  <TouchableOpacity style={dynamicStyles.saveButton} activeOpacity={0.8} onPress={saveCurrentSyncSettings}>
+                    <Text style={dynamicStyles.saveButtonText}>{isSavingSyncSettings ? '保存中...' : '保存加密设置'}</Text>
+                  </TouchableOpacity>
+                  <View style={{ height: 12 }} />
+                </View>
+              )}
+              <View style={dynamicStyles.divider} />
+            </>
+          )}
           <View style={styles.row}>
             <View style={dynamicStyles.iconBox}>
               <Feather name="clock" size={18} color={colors.text} />
@@ -904,7 +962,7 @@ const styles = StyleSheet.create({
   configScanTitle: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '650',
+    fontWeight: '600',
   },
   configScanHint: {
     color: 'rgba(255,255,255,0.72)',
