@@ -16,6 +16,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.jimuzhe.tiez",
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.com.jimuzhe.tiez.keyboard"]
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "UIApplicationShortcutItems": [
@@ -75,9 +78,14 @@
       "expo-video",
       "./plugins/withAndroidTile",
       "./plugins/withAndroidShortcuts",
+      "./plugins/withClipboardKeyboard",
+      "./plugins/withIOSSceneLifecycle",
       [
         "expo-build-properties",
         {
+          "ios": {
+            "buildReactNativeFromSource": true
+          },
           "android": {
             "abiFilters": ["arm64-v8a"],
             "usesCleartextTraffic": true,
@@ -91,7 +99,22 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "4fb696a2-b323-4752-b8bc-f6d165989cbd"
+        "projectId": "4fb696a2-b323-4752-b8bc-f6d165989cbd",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "TieZKeyboard",
+                  "bundleIdentifier": "com.jimuzhe.tiez.keyboard",
+                  "entitlements": {
+                    "com.apple.security.application-groups": ["group.com.jimuzhe.tiez.keyboard"]
+                  }
+                }
+              ]
+            }
+          }
+        }
       }
     },
     "owner": "longdanzi"

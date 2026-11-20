@@ -21,6 +21,16 @@ TieZ Mobile 是 [TieZ Clipboard Manager](https://github.com/jimuzhe/tiez-clipboa
 
 支持在获取 PC 端远程记录后，自动将最新条目写入移动端系统剪贴板。
 
+### 剪贴板键盘（iOS）
+
+首次使用时，在 TieZ「设置」保存 WebDAV 配置并开启「键盘剪贴板历史」。在系统「设置 → 通用 → 键盘 → 键盘 → 添加新键盘」添加「TieZ 剪贴板」。在其他 App 的输入框用地球键切换到 TieZ，再点选一条记录。
+
+在 TieZ 开启「键盘自动拉取」，并在系统键盘设置为 TieZ 开启「允许完全访问」后，切到键盘会从已配置的 WebDAV 读取快照和最新增量。键盘列表支持下拉刷新。关闭完全访问时，键盘仍可使用缓存，也可以在 TieZ 的「同步」页手动拉取。WebDAV 连接信息保存在共享钥匙串中，修改同步地址、账号、密码或密钥后需要重新开启自动拉取。
+
+键盘显示最近 20 条 WebDAV 记录。普通文字、链接和代码点按即插入，单条最多 16,384 个 UTF-16 代码单元。开启「允许完全访问」后，点按图片或富文本会复制到本机系统剪贴板，再在当前输入框点「粘贴」。目标 App 决定接收哪些图片和富文本格式。
+
+需要从 WebDAV 取回的图片和富文本会在点按时下载，此时需要开启「键盘自动拉取」并联网。键盘支持最多 8 MiB 的单张图片和 2 MiB 的单条 HTML。关闭键盘历史或清理本地缓存会清空键盘中的记录。
+
 ## 开发与构建
 
 本项目基于 Expo (React Native) 框架开发。
@@ -42,6 +52,8 @@ TieZ Mobile 是 [TieZ Clipboard Manager](https://github.com/jimuzhe/tiez-clipboa
 ### 生产构建
 
 本项目集成了 EAS Build 自动化流水线。
+
+iOS 键盘由 Expo 预构建生成，需要原生构建。签名时将 App Group `group.com.jimuzhe.tiez.keyboard` 分配给主应用 `com.jimuzhe.tiez` 和扩展 `com.jimuzhe.tiez.keyboard`。
 
 - 构建 Android 群测版 APK：
 

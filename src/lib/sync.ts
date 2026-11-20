@@ -5,6 +5,18 @@ import {
   parseTransferConnection,
 } from './transferConnection';
 import { sendTransferText } from './transferApi';
+import {
+  clearKeyboardClipboardDuring,
+  keyboardClipboardAvailable,
+  isKeyboardClipboardEnabled,
+  KEYBOARD_INLINE_MEDIA_BUDGET,
+  MAX_KEYBOARD_HISTORY_ITEMS,
+  MAX_KEYBOARD_TEXT_LENGTH,
+  publishKeyboardClipboard,
+  setKeyboardAutoRefreshConnection,
+  startKeyboardClipboardRefresh,
+  type KeyboardClipboardItem,
+} from './keyboardClipboard';
 
 export type RecentLimit = number;
 export type PushStrategy = 'mqtt' | 'webdav';
@@ -297,7 +309,7 @@ export async function clearLocalSyncCache(settings?: MobileSyncSettings) {
     getScopedStorageKey(STORAGE_KEYS.webdavLocalItems, spaceKey),
     getScopedStorageKey(STORAGE_KEYS.webdavPulledItems, spaceKey),
   ];
-  await AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS, ...scopedKeys]);
+  await clearKeyboardClipboardDuring(() => AsyncStorage.multiRemove([...LOCAL_SYNC_CACHE_KEYS, ...scopedKeys]));
 }
 
 function truncateLogText(value: string, limit = 240) {
@@ -763,6 +775,7 @@ async function saveJsonStorage(key: string, value: unknown) {
 
 function compactCloudItemForCache(item: CloudSyncItem): CloudSyncItem {
   const normalized = normalizeCloudItem(item);
+  if (normalized.content_type === 'rich_text') normalized.html_content = null;
 
   if (!normalized.content_blob_hash && !normalized.html_blob_hash) {
     return normalized;
@@ -1471,10 +1484,11 @@ async function pullRemoteWebDavOpsFromHead(
 async function pullRemoteWebDavSnapshotsFromHead(
   settings: MobileSyncSettings,
   paths: WebDavPaths,
-  head: WebDavSyncHead
+  head: WebDavSyncHead,
+  hydratedOps?: CloudSyncItem[]
 ) {
   const localDeviceId = await getMobileWebDavDeviceId();
-  let nextRemoteItems = await loadWebDavPulledItems(settings);
+  let nextRemoteItems = hydratedOps ?? await loadWebDavPulledItems(settings);
 
   const remoteDeviceIds = Object.entries(head.devices)
     .filter(([deviceId, deviceHead]) => deviceId !== localDeviceId && deviceHead.snapshot_updated_at > 0)
@@ -1553,7 +1567,42 @@ export async function loadMobileSyncSettings(): Promise<MobileSyncSettings> {
   };
 }
 
+function sameKeyboardClipboardSource(left: MobileSyncSettings, right: MobileSyncSettings) {
+  return left.webdavUrl.trim() === right.webdavUrl.trim()
+    && normalizeWebDavBasePath(left.webdavBasePath) === normalizeWebDavBasePath(right.webdavBasePath)
+    && left.webdavUsername.trim() === right.webdavUsername.trim()
+    && left.webdavPassword === right.webdavPassword
+    && left.e2eKey.trim() === right.e2eKey.trim();
+}
+
 export async function saveMobileSyncSettings(settings: MobileSyncSettings) {
+  if (keyboardClipboardAvailable) {
+    const current = await loadMobileSyncSettings().catch(() => null);
+    if (!current || !sameKeyboardClipboardSource(settings, current)) {
+      return clearKeyboardClipboardDuring(() => persistMobileSyncSettings(settings), true);
+    }
+  }
+  return persistMobileSyncSettings(settings);
+}
+
+export function setKeyboardAutoRefresh(enabled: boolean) {
+  return setKeyboardAutoRefreshConnection(async () => {
+    if (!enabled) return null;
+    const settings = await loadMobileSyncSettings();
+    const url = settings.webdavUrl.trim();
+    if (!/^https?:\/\//i.test(url)) throw new Error('请先保存 WebDAV 同步地址。');
+    return {
+      url,
+      basePath: normalizeWebDavBasePath(settings.webdavBasePath),
+      username: settings.webdavUsername.trim(),
+      password: settings.webdavPassword.trim(),
+      e2eKey: settings.e2eKey.trim(),
+      deviceID: await getMobileWebDavDeviceId(),
+    };
+  });
+}
+
+async function persistMobileSyncSettings(settings: MobileSyncSettings) {
   await AsyncStorage.multiSet([
     [STORAGE_KEYS.webdavUrl, settings.webdavUrl.trim()],
     [STORAGE_KEYS.webdavBasePath, normalizeWebDavBasePath(settings.webdavBasePath)],
@@ -1617,11 +1666,62 @@ export function isMqttConfigured(settings: MobileSyncSettings) {
   return settings.mqttServer.trim().length > 0 && settings.mqttTopic.trim().length > 0;
 }
 
+function buildKeyboardClipboardItems(cloudItems: CloudSyncItem[]): KeyboardClipboardItem[] {
+  const items: KeyboardClipboardItem[] = [];
+  const seen = new Set<string>();
+  let remaining = KEYBOARD_INLINE_MEDIA_BUDGET;
+  const encoder = new TextEncoder();
+
+  const embed = (value: string | null | undefined) => {
+    if (!value || value.length > remaining) return undefined;
+    const bytes = encoder.encode(value).byteLength;
+    if (bytes > remaining) return undefined;
+    remaining -= bytes;
+    return value;
+  };
+
+  for (const item of sortCloudItemsDesc(cloudItems)) {
+    if (items.length >= MAX_KEYBOARD_HISTORY_ITEMS) break;
+    if (!isVisibleCloudItem(item)) continue;
+    if (item.content_type === 'image') {
+      const key = `image:${item.content_hash}`;
+      if (seen.has(key)) continue;
+      const image = item.content.startsWith('data:image/') ? embed(item.content) : undefined;
+      if (image || item.content_blob_hash) {
+        items.push({ kind: 'image', text: '', image, blobHash: item.content_blob_hash ?? undefined, timestamp: item.timestamp });
+        seen.add(key);
+      }
+      continue;
+    }
+
+    // Cached text blobs may only contain a display preview.
+    const text = item.content.length <= MAX_KEYBOARD_TEXT_LENGTH
+      && (!item.content_blob_hash || item.content_hash === computeSyncContentHash(item.content_type, item.content))
+      ? item.content : '';
+    if (item.content_type === 'rich_text') {
+      const key = `richText:${item.content_hash}`;
+      if (seen.has(key)) continue;
+      const html = embed(item.html_content);
+      if (html || item.html_blob_hash) {
+        items.push({ kind: 'richText', text, html, blobHash: item.html_blob_hash ?? undefined });
+        seen.add(key);
+        continue;
+      }
+    }
+    if (text.trim() && !seen.has(`text:${text}`)) {
+      items.push({ kind: 'text', text });
+      seen.add(`text:${text}`);
+    }
+  }
+  return items;
+}
+
 export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<SyncedEntry[]> {
   if (!isWebDavConfigured(settings)) {
     return [];
   }
 
+  const keyboardRefresh = startKeyboardClipboardRefresh();
   const cachedItems = await loadWebDavPulledItems(settings);
 
   try {
@@ -1629,7 +1729,7 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
     // are what should show then.
     const paths = await ensureWebDavDirectories(settings);
     let syncHead = await resolveWebDavSyncHead(settings, paths);
-    const { headStale } = await pullRemoteWebDavOpsFromHead(settings, paths, syncHead);
+    const { headStale, items: hydratedOps } = await pullRemoteWebDavOpsFromHead(settings, paths, syncHead);
 
     if (headStale) {
       syncHead = await rebuildWebDavSyncHead(settings, paths);
@@ -1637,8 +1737,15 @@ export async function fetchWebDavEntries(settings: MobileSyncSettings): Promise<
       await uploadWebDavSyncHead(settings, paths.headPath, syncHead);
     }
 
-    const pulledItems = await pullRemoteWebDavSnapshotsFromHead(settings, paths, syncHead);
+    const keyboardEnabled = await isKeyboardClipboardEnabled().catch(() => false);
+    const pulledItems = await pullRemoteWebDavSnapshotsFromHead(settings, paths, syncHead,
+      keyboardEnabled ? hydratedOps : undefined);
     reportE2eMismatch();
+    if (keyboardEnabled) {
+      await publishKeyboardClipboard(keyboardRefresh, () => buildKeyboardClipboardItems(pulledItems), async () =>
+        sameKeyboardClipboardSource(settings, await loadMobileSyncSettings())
+      ).catch(() => {});
+    }
     return dedupeEntries(
       pulledItems
         .filter((item) => isVisibleCloudItem(item))
