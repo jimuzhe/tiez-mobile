@@ -15,6 +15,7 @@ import {
   Linking,
   Animated,
   Dimensions,
+  Switch,
   UIManager,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,11 +32,13 @@ import {
   getLocalSyncCacheSize,
   loadMobileSyncSettings,
   saveMobileSyncSettings,
+  setKeyboardAutoRefresh,
   type MobileSyncSettings,
   type RecentLimit,
 } from '../lib/sync';
 import { applyConfigQrToSettings, parseTiezConfigQr } from '../lib/configQr';
 import { parseE2eKey } from '../lib/e2e';
+import { isKeyboardAutoRefreshEnabled, isKeyboardClipboardEnabled, keyboardClipboardAvailable, setKeyboardClipboardEnabled } from '../lib/keyboardClipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import { checkUpdate, RELEASE_CHANNEL } from '../lib/updateChecker';
@@ -68,6 +71,9 @@ export default function SettingsScreen() {
   const [isAboutVisible, setIsAboutVisible] = useState(false);
   const [shouldRenderAbout, setShouldRenderAbout] = useState(false);
   const [localCacheSizeLabel, setLocalCacheSizeLabel] = useState('0 B');
+  const [keyboardHistoryEnabled, setKeyboardHistoryEnabled] = useState<boolean | null>(null);
+  const [keyboardAutoRefresh, setKeyboardAutoRefreshState] = useState(false);
+  const [isTogglingKeyboardHistory, setIsTogglingKeyboardHistory] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const sheetEntryAnim = useRef(new Animated.Value(0)).current;
   const [configScanKind, setConfigScanKind] = useState<ConfigScanKind | null>(null);
@@ -114,6 +120,10 @@ export default function SettingsScreen() {
       setHasSavedE2eKey(!!settings.e2eKey);
     });
     refreshLocalCacheSize().catch(() => {});
+    if (keyboardClipboardAvailable) {
+      isKeyboardClipboardEnabled().then(setKeyboardHistoryEnabled).catch(() => setKeyboardHistoryEnabled(false));
+      isKeyboardAutoRefreshEnabled().then(setKeyboardAutoRefreshState).catch(() => {});
+    }
   }, []);
 
   useFocusEffect(
@@ -138,6 +148,9 @@ export default function SettingsScreen() {
     try {
       await saveMobileSyncSettings(nextSettings);
     } finally {
+      if (keyboardClipboardAvailable) {
+        await isKeyboardAutoRefreshEnabled().then(setKeyboardAutoRefreshState).catch(() => {});
+      }
       setIsSavingSyncSettings(false);
     }
   };
@@ -364,7 +377,9 @@ export default function SettingsScreen() {
   const handleClearLocalCache = () => {
     Alert.alert(
       '清理本地缓存',
-      '会清空手机端已缓存的 WebDAV 拉取记录、增量游标和本地索引，但不会删除你的同步配置。',
+      keyboardClipboardAvailable
+        ? '会清空手机端的 WebDAV 缓存和键盘历史，并保留同步配置。'
+        : '会清空手机端已缓存的 WebDAV 拉取记录、增量游标和本地索引，并保留你的同步配置。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -384,6 +399,31 @@ export default function SettingsScreen() {
         },
       ]
     );
+  };
+
+  const toggleKeyboardHistory = async (enabled: boolean) => {
+    setIsTogglingKeyboardHistory(true);
+    try {
+      await setKeyboardClipboardEnabled(enabled);
+      setKeyboardHistoryEnabled(enabled);
+      if (!enabled) setKeyboardAutoRefreshState(false);
+    } catch {
+      Alert.alert('键盘历史设置失败', '请重新打开 TieZ 后再试一次。');
+    } finally {
+      setIsTogglingKeyboardHistory(false);
+    }
+  };
+
+  const toggleKeyboardAutoRefresh = async (enabled: boolean) => {
+    setIsTogglingKeyboardHistory(true);
+    try {
+      await setKeyboardAutoRefresh(enabled);
+      setKeyboardAutoRefreshState(await isKeyboardAutoRefreshEnabled());
+    } catch (error) {
+      Alert.alert('键盘自动拉取设置失败', error instanceof Error ? error.message : '请确认已保存 WebDAV 配置。');
+    } finally {
+      setIsTogglingKeyboardHistory(false);
+    }
   };
 
   const dynamicStyles = StyleSheet.create({
@@ -738,6 +778,45 @@ export default function SettingsScreen() {
             <Text style={dynamicStyles.valueText}>{localCacheSizeLabel}</Text>
           </TouchableOpacity>
         </View>
+
+        {keyboardClipboardAvailable && (
+          <View style={{ marginTop: 24 }}>
+            <View style={dynamicStyles.card}>
+              <View style={styles.row}>
+                <View style={dynamicStyles.iconBox}>
+                  <Feather name="clipboard" size={18} color={colors.text} />
+                </View>
+                <Text style={dynamicStyles.rowText}>键盘剪贴板历史</Text>
+                <Switch
+                  accessibilityLabel="键盘剪贴板历史"
+                  value={keyboardHistoryEnabled === true}
+                  disabled={keyboardHistoryEnabled === null || isTogglingKeyboardHistory || isSavingSyncSettings}
+                  onValueChange={toggleKeyboardHistory}
+                />
+              </View>
+              {keyboardHistoryEnabled && (
+                <>
+                  <View style={dynamicStyles.divider} />
+                  <View style={styles.row}>
+                    <View style={dynamicStyles.iconBox}>
+                      <Feather name="refresh-cw" size={18} color={colors.text} />
+                    </View>
+                    <Text style={dynamicStyles.rowText}>键盘自动拉取</Text>
+                    <Switch
+                      accessibilityLabel="键盘自动拉取"
+                      value={keyboardAutoRefresh}
+                      disabled={isTogglingKeyboardHistory || isSavingSyncSettings}
+                      onValueChange={toggleKeyboardAutoRefresh}
+                    />
+                  </View>
+                </>
+              )}
+            </View>
+            <Text style={dynamicStyles.sectionFooter}>
+              在系统「设置 → 通用 → 键盘 → 键盘」添加「TieZ 剪贴板」。开启「键盘自动拉取」和系统的「允许完全访问」后，切到键盘即从你配置的 WebDAV 更新记录。离线时仍可使用缓存。
+            </Text>
+          </View>
+        )}
 
         <View style={[dynamicStyles.card, { marginTop: 24 }]}>
           <View style={styles.row}>
